@@ -15,6 +15,19 @@ def test_rich_text_prop():
     }
 
 
+def test_rich_text_prop_chunks_text_over_notion_limit():
+    long_text = "a" * 2500
+    result = nc.rich_text_prop(long_text)
+    chunks = result["rich_text"]
+    assert len(chunks) == 2
+    assert all(len(c["text"]["content"]) <= 1900 for c in chunks)
+    assert "".join(c["text"]["content"] for c in chunks) == long_text
+
+
+def test_rich_text_prop_empty_string_still_produces_one_chunk():
+    assert nc.rich_text_prop("") == {"rich_text": [{"type": "text", "text": {"content": ""}}]}
+
+
 def test_select_prop():
     assert nc.select_prop("ally") == {"select": {"name": "ally"}}
 

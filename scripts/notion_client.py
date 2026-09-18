@@ -90,7 +90,11 @@ def title_prop(text: str) -> dict:
 
 
 def rich_text_prop(text: str) -> dict:
-    return {"rich_text": [{"type": "text", "text": {"content": text}}]}
+    # Notion rejects any single text object over 2000 chars; chunk so
+    # accumulating Daily Log fields don't start failing once they grow past it.
+    chunk_size = 1900
+    chunks = [text[i : i + chunk_size] for i in range(0, len(text), chunk_size)] or [""]
+    return {"rich_text": [{"type": "text", "text": {"content": c}} for c in chunks]}
 
 
 def select_prop(name: str) -> dict:
