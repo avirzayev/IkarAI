@@ -108,7 +108,24 @@ buildings) have historically gone untried for cycles at a time despite
 being fully catalogued — check whether either applies before deciding
 to just wait out a locked research node. A free lever you haven't
 pulled yet is almost always worth more this cycle than a longer
-`next_wake`. Guidelines for each decision in the loop:
+`next_wake`.
+
+**If the World Knowledge page is still sparse, treat building it up as
+a first-class task, not something to only reach for reactively.** The
+existing rule below ("look it up before spending a scarce resource on
+a guess") only fires at the moment you're about to commit to a specific
+inference — it won't save you from mechanics you haven't thought to
+question yet. Early in an empire's life, spend part of a cycle running
+a handful of targeted `WebSearch` queries covering the basics before
+you need them: recommended early research order, what the buildings on
+your current land plots actually do, how governance types differ,
+how resource/production mechanics work in general. Write a consolidated
+summary to World Knowledge, noting it's from external research. (Direct
+`WebFetch` of `ikariam.fandom.com` pages returns 402 regardless of the
+specific page — confirmed on multiple URLs — so rely on `WebSearch`
+result snippets, not fetching full wiki pages.) One good front-loaded
+research pass now is worth more than catching the same class of wrong
+guess cycle after cycle. Guidelines for each decision in the loop:
 
 - **Nothing to do right now is a fine place to stop.** Move to step 7.
 - **Known action needed:** look it up in the Action Catalog, call it via
