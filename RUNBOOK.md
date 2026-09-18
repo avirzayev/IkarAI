@@ -98,7 +98,13 @@ in the loop:
   uses (`Name`, `Kind`, `Method`, `Path`, `Action`, `Function`, `Params`,
   `LastVerified`, `Notes`).
 
-**To create a Human Required entry:** call
+**To create a Human Required entry:** first check whether an
+unanswered row about the same issue already exists (you just queried
+`NOTION_HUMAN_REQUIRED_DB_ID` in step 1 — reuse that list rather than
+querying again). If one does, leave it alone rather than creating a
+duplicate — this matters most for a stuck session, where every cycle
+would otherwise re-ask the same question until you reply. Only if
+there's no existing open row on this topic, call
 `scripts/notion_client.create_page()` against `NOTION_HUMAN_REQUIRED_DB_ID`
 with `{"Name": title_prop("<short summary>"), "CreatedAt": date_prop("<today>")}`
 and `children=[heading2_block("Question"), paragraph_block("<full context>")]`.
