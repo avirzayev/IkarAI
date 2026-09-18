@@ -121,11 +121,20 @@ you need them: recommended early research order, what the buildings on
 your current land plots actually do, how governance types differ,
 how resource/production mechanics work in general. Write a consolidated
 summary to World Knowledge, noting it's from external research. (Direct
-`WebFetch` of `ikariam.fandom.com` pages returns 402 regardless of the
-specific page — confirmed on multiple URLs — so rely on `WebSearch`
-result snippets, not fetching full wiki pages.) One good front-loaded
-research pass now is worth more than catching the same class of wrong
-guess cycle after cycle. Guidelines for each decision in the loop:
+`WebFetch` of `ikariam.fandom.com` *wiki pages* returns 402 regardless
+of the specific page — confirmed on multiple URLs. Use the wiki's own
+MediaWiki API instead, via `Bash`/`curl` — it's separate infrastructure
+from the Cloudflare-protected pages and returns clean data with no
+blocking, confirmed working: `curl "https://ikariam.fandom.com/api.php?action=query&list=search&srsearch=<topic>&format=json"`
+to find the right page title, then
+`curl "https://ikariam.fandom.com/api.php?action=parse&page=<title>&prop=wikitext&format=json"`
+for that page's actual content, including infobox fields like a
+building's `requirements`. This is more precise than `WebSearch`
+snippets for structured facts like exact prerequisites — prefer it for
+those; use `WebSearch` for open-ended questions the API's page-lookup
+model doesn't fit.) One good front-loaded research pass now is worth
+more than catching the same class of wrong guess cycle after cycle.
+Guidelines for each decision in the loop:
 
 - **Nothing to do right now is a fine place to stop.** Move to step 7.
 - **Known action needed:** look it up in the Action Catalog, call it via
@@ -142,12 +151,13 @@ guess cycle after cycle. Guidelines for each decision in the loop:
 - **Before spending research points or wood on a guess, look it up
   first.** A real cycle burned 8 research points on Carpentry believing
   it led toward wood production — it didn't (it reduces building
-  costs), and research points are slow to bank. `WebSearch`/`WebFetch`
-  are available specifically for this: a community wiki (e.g.
-  https://ikariam.fandom.com/wiki/Category:Guides) or a quick search
-  for "ikariam <research/building name>" usually answers "what does
-  this actually do/unlock" in seconds, for free, before you commit a
-  scarce resource to an inference. This applies to strategic questions
+  costs), and research points are slow to bank. Look it up first via
+  the Ikariam Fandom wiki's MediaWiki API (see above — `curl` against
+  `api.php`, not `WebFetch` on the wiki pages themselves, which are
+  blocked) or a `WebSearch` for "ikariam <research/building name>" —
+  either usually answers "what does this actually do/unlock" in
+  seconds, for free, before you commit a scarce resource to an
+  inference. This applies to strategic questions
   generally, not just unknown HTTP actions — governance types, research
   tree order, unit stats, whatever you'd otherwise be guessing at. Log
   genuinely useful findings to the World Knowledge page and note they
