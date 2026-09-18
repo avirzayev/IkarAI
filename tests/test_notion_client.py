@@ -88,3 +88,39 @@ def test_append_blocks_patches_children(mock_patch):
     args, kwargs = mock_patch.call_args
     assert args[0] == "https://api.notion.com/v1/blocks/block-1/children"
     assert kwargs["json"] == {"children": blocks}
+
+
+@patch("notion_client.requests.get")
+def test_get_page_returns_json(mock_get):
+    mock_get.return_value = _mock_response({"id": "page-1"})
+    result = nc.get_page("tok", "page-1")
+    assert result == {"id": "page-1"}
+    args, kwargs = mock_get.call_args
+    assert args[0] == "https://api.notion.com/v1/pages/page-1"
+
+
+@patch("notion_client.requests.get")
+def test_get_block_children_returns_results(mock_get):
+    mock_get.return_value = _mock_response({"results": [{"id": "block-1"}]})
+    result = nc.get_block_children("tok", "block-1")
+    assert result == [{"id": "block-1"}]
+    args, kwargs = mock_get.call_args
+    assert args[0] == "https://api.notion.com/v1/blocks/block-1/children"
+
+
+@patch("notion_client.requests.patch")
+def test_update_page_patches_properties(mock_patch):
+    mock_patch.return_value = _mock_response({"id": "page-1"})
+    nc.update_page("tok", "page-1", {"Name": nc.title_prop("x")})
+    args, kwargs = mock_patch.call_args
+    assert args[0] == "https://api.notion.com/v1/pages/page-1"
+    assert kwargs["json"] == {"properties": {"Name": nc.title_prop("x")}}
+
+
+@patch("notion_client.requests.patch")
+def test_archive_page_sets_archived_true(mock_patch):
+    mock_patch.return_value = _mock_response({"id": "page-1", "archived": True})
+    nc.archive_page("tok", "page-1")
+    args, kwargs = mock_patch.call_args
+    assert args[0] == "https://api.notion.com/v1/pages/page-1"
+    assert kwargs["json"] == {"archived": True}

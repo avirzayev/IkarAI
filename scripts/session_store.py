@@ -35,3 +35,15 @@ def read_action_request(session_dir: Path) -> str:
 
 def write_action_request(session_dir: Path, token: str) -> None:
     (session_dir / "action_request.txt").write_text(token)
+
+
+def read_next_wake(session_dir: Path) -> str | None:
+    path = session_dir / "next_wake.txt"
+    if not path.exists():
+        return None
+    value = path.read_text().strip()
+    return value or None
+
+
+def write_next_wake(session_dir: Path, iso_timestamp: str) -> None:
+    (session_dir / "next_wake.txt").write_text(iso_timestamp)

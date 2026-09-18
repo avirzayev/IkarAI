@@ -57,6 +57,34 @@ def append_blocks(token: str, block_id: str, children: list) -> dict:
     return resp.json()
 
 
+def get_page(token: str, page_id: str) -> dict:
+    resp = requests.get(f"{NOTION_API}/pages/{page_id}", headers=_headers(token))
+    resp.raise_for_status()
+    return resp.json()
+
+
+def get_block_children(token: str, block_id: str) -> list:
+    resp = requests.get(f"{NOTION_API}/blocks/{block_id}/children", headers=_headers(token))
+    resp.raise_for_status()
+    return resp.json()["results"]
+
+
+def update_page(token: str, page_id: str, properties: dict) -> dict:
+    resp = requests.patch(
+        f"{NOTION_API}/pages/{page_id}", headers=_headers(token), json={"properties": properties}
+    )
+    resp.raise_for_status()
+    return resp.json()
+
+
+def archive_page(token: str, page_id: str) -> dict:
+    resp = requests.patch(
+        f"{NOTION_API}/pages/{page_id}", headers=_headers(token), json={"archived": True}
+    )
+    resp.raise_for_status()
+    return resp.json()
+
+
 def title_prop(text: str) -> dict:
     return {"title": [{"type": "text", "text": {"content": text}}]}
 

@@ -47,6 +47,11 @@ DIPLOMACY_SCHEMA = {
     "LastUpdated": {"date": {}},
 }
 
+HUMAN_REQUIRED_SCHEMA = {
+    "Name": {"title": {}},
+    "CreatedAt": {"date": {}},
+}
+
 
 def find_child_by_title(token: str, parent_page_id: str, title: str, object_type: str) -> str | None:
     results = nc.search(token, query=title)
@@ -162,6 +167,7 @@ def main() -> None:
     action_catalog_id = ensure_database(token, root, "Action Catalog", ACTION_CATALOG_SCHEMA)
     daily_logs_id = ensure_database(token, root, "Daily Logs", DAILY_LOGS_SCHEMA)
     diplomacy_id = ensure_database(token, root, "Diplomacy", DIPLOMACY_SCHEMA)
+    human_required_id = ensure_database(token, root, "Human Required", HUMAN_REQUIRED_SCHEMA)
     profile_id = ensure_page(token, root, "Profile & Persona", build_persona_children(config))
     strategy_id = ensure_page(token, root, "Strategy", build_strategy_children())
     world_id = ensure_page(token, root, "World Knowledge", [nc.heading2_block("Learned Mechanics")])
@@ -172,6 +178,7 @@ def main() -> None:
             "NOTION_ACTION_CATALOG_DB_ID": action_catalog_id,
             "NOTION_DAILY_LOGS_DB_ID": daily_logs_id,
             "NOTION_DIPLOMACY_DB_ID": diplomacy_id,
+            "NOTION_HUMAN_REQUIRED_DB_ID": human_required_id,
             "NOTION_PROFILE_PAGE_ID": profile_id,
             "NOTION_STRATEGY_PAGE_ID": strategy_id,
             "NOTION_WORLD_KNOWLEDGE_PAGE_ID": world_id,
