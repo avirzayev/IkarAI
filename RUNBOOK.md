@@ -197,10 +197,33 @@ alliance offer), update or create their row in `NOTION_DIPLOMACY_DB_ID`.
 
 ## 8. Update today's Daily Log, decide the next wake time, and exit
 
-- If today's date has no entry in `NOTION_DAILY_LOGS_DB_ID` yet, create
-  one. Otherwise update it via `scripts/notion_client.update_page()`.
-  Capture: what changed, resources gained/lost, decisions made and why
-  (in character — this is where the persona shows), what's next.
+Daily Log entries are **page content blocks**, not database properties —
+a human scanning the page needs to see each cycle as its own clearly
+separated section, newest at the top, not one continuously-growing wall
+of text. (The database still has `Decisions`/`Events`/etc. rich_text
+properties from an earlier design; leave them alone, don't write to
+them — they're vestigial.)
+
+- **If today's date has no entry in `NOTION_DAILY_LOGS_DB_ID` yet**,
+  create one with `scripts/notion_client.create_page()`, passing a
+  single child block as `children`: a paragraph reading
+  `⏰ Next scheduled run: (not yet decided)` via
+  `scripts/notion_client.paragraph_block()`. This will always be the
+  page's first block — call it the **header block**.
+- **Otherwise**, call `scripts/notion_client.get_block_children(page_id)`
+  and take the first block as the header block. (It's always first by
+  construction — every new cycle entry gets inserted right after it,
+  never before it or at the true end of the page.)
+- **Add this cycle's entry**: build a `heading_3` block via
+  `scripts/notion_client.heading3_block()` reading the current local
+  time (e.g. `19:07 IDT`), followed by one or a few `paragraph_block()`s
+  covering what changed, resources gained/lost, decisions made and why
+  (in character — this is where the persona shows), and what's next.
+  Append these with
+  `scripts/notion_client.append_blocks(token, page_id, [heading, ...paragraphs], after=header_block_id)`
+  — the `after` param is what makes this land immediately below the
+  header instead of at the bottom of a growing page, so newest is
+  always what you see first without scrolling.
 - Decide when the next cycle should actually run, and write an ISO-8601
   UTC timestamp (`YYYY-MM-DDTHH:MM:SSZ`) to `session/next_wake.txt` via
   `scripts/session_store.write_next_wake()`. A ticker cron checks this
@@ -216,5 +239,10 @@ alliance offer), update or create their row in `NOTION_DIPLOMACY_DB_ID`.
     something genuinely needs a check that soon.
   - A Human Required entry is pending and not urgent → a moderate wait
     (e.g. 1-3 hours) gives the human time to reply without you spinning.
+- **Update the header block in place** — this is the last thing you do,
+  after `next_wake` is actually decided — with
+  `scripts/notion_client.update_block(token, header_block_id, {"paragraph": {"rich_text": [{"type": "text", "text": {"content": "⏰ Next scheduled run: <local time> (<UTC time> UTC)"}}]}})`
+  so the header always reflects the real next run time, visible at the
+  top of the page without needing to read any cycle entry.
 - Exit. There's no cleanup step beyond this — exiting the process ends
   the run.

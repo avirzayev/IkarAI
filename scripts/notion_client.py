@@ -47,11 +47,22 @@ def search(token: str, query: str = "") -> list:
     return resp.json()["results"]
 
 
-def append_blocks(token: str, block_id: str, children: list) -> dict:
+def append_blocks(token: str, block_id: str, children: list, after: str | None = None) -> dict:
+    payload = {"children": children}
+    if after:
+        payload["after"] = after
     resp = requests.patch(
         f"{NOTION_API}/blocks/{block_id}/children",
         headers=_headers(token),
-        json={"children": children},
+        json=payload,
+    )
+    resp.raise_for_status()
+    return resp.json()
+
+
+def update_block(token: str, block_id: str, block_payload: dict) -> dict:
+    resp = requests.patch(
+        f"{NOTION_API}/blocks/{block_id}", headers=_headers(token), json=block_payload
     )
     resp.raise_for_status()
     return resp.json()
@@ -118,6 +129,14 @@ def heading2_block(text: str) -> dict:
         "object": "block",
         "type": "heading_2",
         "heading_2": {"rich_text": [{"type": "text", "text": {"content": text}}]},
+    }
+
+
+def heading3_block(text: str) -> dict:
+    return {
+        "object": "block",
+        "type": "heading_3",
+        "heading_3": {"rich_text": [{"type": "text", "text": {"content": text}}]},
     }
 
 

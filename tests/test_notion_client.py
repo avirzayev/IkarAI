@@ -103,6 +103,33 @@ def test_append_blocks_patches_children(mock_patch):
     assert kwargs["json"] == {"children": blocks}
 
 
+@patch("notion_client.requests.patch")
+def test_append_blocks_with_after_includes_it_in_payload(mock_patch):
+    mock_patch.return_value = _mock_response({"results": []})
+    blocks = [nc.paragraph_block("hi")]
+    nc.append_blocks("tok", "block-1", blocks, after="block-header")
+    args, kwargs = mock_patch.call_args
+    assert kwargs["json"] == {"children": blocks, "after": "block-header"}
+
+
+@patch("notion_client.requests.patch")
+def test_update_block_patches_block_content(mock_patch):
+    mock_patch.return_value = _mock_response({"id": "block-1"})
+    payload = {"paragraph": {"rich_text": [{"type": "text", "text": {"content": "new"}}]}}
+    nc.update_block("tok", "block-1", payload)
+    args, kwargs = mock_patch.call_args
+    assert args[0] == "https://api.notion.com/v1/blocks/block-1"
+    assert kwargs["json"] == payload
+
+
+def test_heading3_block():
+    assert nc.heading3_block("Cycle 12") == {
+        "object": "block",
+        "type": "heading_3",
+        "heading_3": {"rich_text": [{"type": "text", "text": {"content": "Cycle 12"}}]},
+    }
+
+
 @patch("notion_client.requests.get")
 def test_get_page_returns_json(mock_get):
     mock_get.return_value = _mock_response({"id": "page-1"})
