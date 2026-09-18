@@ -1,3 +1,5 @@
+import re
+
 import requests
 
 USER_AGENT = (
@@ -63,6 +65,21 @@ def call_action(
         return resp.json()
     except ValueError as exc:
         raise SessionInvalidError(f"Non-JSON response from action={action} — session likely expired.") from exc
+
+
+def bootstrap_action_request(server: str, cookie: str) -> str:
+    """Derive a fresh actionRequest token from a plain page load — only the
+    cookie is needed. Lets a human refresh a session by supplying just the
+    Cookie header value, without also hunting for actionRequest in DevTools."""
+    resp = requests.get(f"https://{server}/", headers=build_headers(cookie))
+    if resp.status_code != 200:
+        raise SessionInvalidError(f"Unexpected status {resp.status_code} bootstrapping actionRequest")
+    match = re.search(r'actionRequest["\s:=]+([a-f0-9]{32})', resp.text)
+    if not match:
+        raise SessionInvalidError(
+            "Could not find an actionRequest token in the page — cookie is likely invalid."
+        )
+    return match.group(1)
 
 
 def check_session(server: str, cookie: str, action_request: str, city_id: str) -> tuple:

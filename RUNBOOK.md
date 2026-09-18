@@ -28,6 +28,17 @@ you run yourself are already in the right zone.
   archive the row with `scripts/notion_client.archive_page(page_id)` so
   it's removed once resolved.
 - If a row still has only 2 blocks, it's unanswered — leave it, move on.
+- **Special case — session-refresh replies.** If the row's title is
+  "Ikariam session expired — manual cookie refresh needed" (created in
+  step 2 or step 3 below) and it has a reply: treat the full reply text
+  as the fresh `Cookie` header value. Write it with
+  `scripts/session_store.write_cookie(session_dir, cookie)`, then call
+  `scripts/ikariam_client.bootstrap_action_request(server, cookie)` to
+  derive a fresh `actionRequest` token from that cookie alone (no need
+  for the human to separately hunt for one in DevTools), and persist it
+  with `scripts/session_store.write_action_request()`. Then continue
+  the rest of this cycle normally using the refreshed session — don't
+  stop early just because this cycle started with an expired one.
 
 ## 2. Load session state
 
@@ -37,10 +48,13 @@ you run yourself are already in the right zone.
 - Use `scripts/session_store.read_cookie()` and `read_action_request()`
   to load the current session state from `session/`.
 - If either raises `SessionError`: **stop this run.** Create a Human
-  Required entry (step 6) saying the Ikariam session needs a manual
-  refresh (see DESIGN.md §7), then skip to step 8 (decide next wake —
-  pick something short, e.g. 15-30 minutes, so you check again soon
-  without spamming) and exit. Do not attempt to log in yourself.
+  Required entry (step 6) with the exact title
+  `Ikariam session expired — manual cookie refresh needed` (this exact
+  string is required — step 1's reply-handling matches on it) asking
+  for a manual refresh (see DESIGN.md §7), then skip to step 8 (decide
+  next wake — pick something short, e.g. 15-30 minutes, so you check
+  again soon without spamming) and exit. Do not attempt to log in
+  yourself.
 
 ## 3. Verify the session is still valid
 
@@ -50,7 +64,8 @@ you run yourself are already in the right zone.
 - On success: call `scripts/session_store.write_action_request()` with the
   new token immediately, before doing anything else, so the token is never
   stale even if this run fails partway through.
-- On `SessionInvalidError`: same handling as step 2's session-missing case.
+- On `SessionInvalidError`: same handling as step 2's session-missing
+  case, including the exact Human Required title.
 
 ## 4. Pull context from Notion
 

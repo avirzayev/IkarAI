@@ -19,6 +19,10 @@ def read_cookie(session_dir: Path) -> str:
     return cookie
 
 
+def write_cookie(session_dir: Path, cookie: str) -> None:
+    (session_dir / "cookie.txt").write_text(cookie.strip())
+
+
 def read_action_request(session_dir: Path) -> str:
     token_path = session_dir / "action_request.txt"
     if not token_path.exists():

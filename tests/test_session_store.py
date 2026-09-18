@@ -6,6 +6,7 @@ from session_store import (
     read_cookie,
     read_next_wake,
     write_action_request,
+    write_cookie,
     write_next_wake,
 )
 
@@ -24,6 +25,11 @@ def test_read_cookie_raises_when_file_empty(tmp_path):
 def test_read_cookie_returns_stripped_content(tmp_path):
     (tmp_path / "cookie.txt").write_text("ikariam_session=abc123\n")
     assert read_cookie(tmp_path) == "ikariam_session=abc123"
+
+
+def test_write_then_read_cookie_roundtrips(tmp_path):
+    write_cookie(tmp_path, "ikariam_session=fresh456\n")
+    assert read_cookie(tmp_path) == "ikariam_session=fresh456"
 
 
 def test_read_action_request_raises_when_missing(tmp_path):

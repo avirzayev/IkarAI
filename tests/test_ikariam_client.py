@@ -121,3 +121,38 @@ def test_check_session_returns_new_token_and_resources(mock_call_nav):
     args, kwargs = mock_call_nav.call_args
     assert args[3] == "townHall"
     assert args[4]["cityId"] == "355955"
+
+
+def _mock_html_response(text, status=200):
+    resp = MagicMock()
+    resp.status_code = status
+    resp.text = text
+    return resp
+
+
+@patch("ikariam_client.requests.get")
+def test_bootstrap_action_request_extracts_token_from_html(mock_get):
+    html = (
+        '<script>var data = [["updateGlobalData",{"actionRequest":'
+        '"7561b12fe573ea2f0a76a31720a0f029","time":123}]];</script>'
+    )
+    mock_get.return_value = _mock_html_response(html)
+    token = ic.bootstrap_action_request("s401-en.ikariam.gameforge.com", "cookie123")
+    assert token == "7561b12fe573ea2f0a76a31720a0f029"
+    args, kwargs = mock_get.call_args
+    assert args[0] == "https://s401-en.ikariam.gameforge.com/"
+    assert kwargs["headers"]["Cookie"] == "cookie123"
+
+
+@patch("ikariam_client.requests.get")
+def test_bootstrap_action_request_raises_when_pattern_missing(mock_get):
+    mock_get.return_value = _mock_html_response("<html>login form, no token here</html>")
+    with pytest.raises(ic.SessionInvalidError):
+        ic.bootstrap_action_request("server", "stale-cookie")
+
+
+@patch("ikariam_client.requests.get")
+def test_bootstrap_action_request_raises_on_non_200(mock_get):
+    mock_get.return_value = _mock_html_response("", status=302)
+    with pytest.raises(ic.SessionInvalidError):
+        ic.bootstrap_action_request("server", "cookie")
