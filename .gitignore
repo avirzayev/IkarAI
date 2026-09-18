@@ -1,5 +1,5 @@
 .env
-session/*.txt
+session/
 har/*.har
 __pycache__/
 *.pyc
