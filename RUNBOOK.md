@@ -9,6 +9,15 @@ constraints. This file is the step-by-step for what to actually do.
 
 All paths below are relative to `/opt/ideas/games/ikarAI/`.
 
+**Timezone:** `.env`'s `TIMEZONE` (an IANA name, e.g. `Asia/Jerusalem`;
+defaults to UTC if unset) is what "today" means throughout this
+document — the Daily Log title, `CreatedAt` on Human Required entries,
+and any other date/time you write should use it, not UTC. Get it with
+`TZ="$(grep -oP '(?<=^TIMEZONE=).*' .env)" date +%F` (falls back to UTC
+automatically if `TIMEZONE` isn't set). `run_hourly_cycle.sh` already
+exports `TZ` for the shell this cycle runs in, so plain `date` commands
+you run yourself are already in the right zone.
+
 ## 1. Handle any answered Human Required items first
 
 - Query `NOTION_HUMAN_REQUIRED_DB_ID` via `scripts/notion_client.query_database()`.
@@ -49,7 +58,8 @@ Using `scripts/notion_client.query_database()` and `get_page()`/`get_block_child
 - `NOTION_PROFILE_PAGE_ID` — who you are, your persona, red lines.
 - `NOTION_STRATEGY_PAGE_ID` — current plan and active initiatives.
 - `NOTION_DAILY_LOGS_DB_ID` — the last few days of logs, and whether
-  today already has an entry (title = today's ISO date). If it exists,
+  today already has an entry (title = today's date, local timezone —
+  see the Timezone note above). If it exists,
   use `scripts/notion_client.update_page()` to append to it rather than
   creating a duplicate.
 - `NOTION_ACTION_CATALOG_DB_ID` — the full catalog of known HTTP actions.

@@ -36,6 +36,18 @@ def test_load_config_reads_required_fields(tmp_path):
     )
 
 
+def test_load_config_defaults_timezone_to_utc(tmp_path):
+    env_path = tmp_path / ".env"
+    env_path.write_text(ENV_CONTENT)
+    assert load_config(env_path).timezone == "UTC"
+
+
+def test_load_config_reads_timezone_when_set(tmp_path):
+    env_path = tmp_path / ".env"
+    env_path.write_text(ENV_CONTENT + "TIMEZONE=Asia/Jerusalem\n")
+    assert load_config(env_path).timezone == "Asia/Jerusalem"
+
+
 def test_load_config_missing_required_key_raises(tmp_path):
     env_path = tmp_path / ".env"
     env_path.write_text("IKARIAM_USERNAME=x\n")
