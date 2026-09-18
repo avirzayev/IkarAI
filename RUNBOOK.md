@@ -81,9 +81,10 @@ in the loop:
   "considered, declined — policy" in today's Daily Log and move on.
   This is a flat rule, not a judgment call.
 - **Destructive/high-blast-radius action** (disbanding the army, leaving
-  a clan, abandoning a city): do not execute. Create a Human Required
-  entry (below) describing what you'd do and why, and wait for a reply
-  in a future cycle before any run executes it.
+  a clan, abandoning a city): you may execute these on your own
+  judgment, same as any other strategic decision — no approval needed.
+  Document the reasoning clearly in today's Daily Log (step 8) so
+  there's a record of why, after the fact.
 - **Unfamiliar situation, no catalog entry fits:** research the general
   mechanic (`WebSearch`/`WebFetch` are available) but do not guess-execute
   an unverified HTTP call against the live account. If it's genuinely

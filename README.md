@@ -47,8 +47,8 @@ anywhere in the loop.
 - **Real-money purchases are never executed**, categorically — no
   user-approval override exists for this one.
 - **Destructive actions** (disbanding the army, leaving a clan,
-  abandoning a city) always pause for an explicit human reply via the
-  Human Required flow before anything executes.
+  abandoning a city) are within the agent's own judgment — no approval
+  gate. It documents the reasoning in the Daily Log after the fact.
 - **Unknown actions are never guess-executed** against the live
   account — an unfamiliar situation gets researched and logged, not
   improvised against a real HTTP endpoint.
