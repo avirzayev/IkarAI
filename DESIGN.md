@@ -29,9 +29,16 @@ that reacts to what happens in the game (grudges, alliances, ambition).
 ## 3. Architecture overview
 
 Claude Code itself is the "brain" — there is no separate always-on
-process. A cron-scheduled cloud agent (via the `schedule` skill) invokes
-a Claude Code session roughly once an hour. Each invocation is
-stateless at the process level; all durable state lives in two places:
+process. A **local** cron job (or systemd timer) on this machine
+invokes a headless Claude Code session (`claude -p`) roughly once an
+hour. (Earlier drafts of this section proposed a cron-scheduled *cloud*
+agent via the `schedule` skill; that was discovered to be infeasible
+during implementation — cloud routines run in an isolated sandbox with
+no access to this machine's local files, `.env`, or session cookie, and
+this project's entire state model depends on exactly those. Local
+scheduling was always the documented alternative and is what's actually
+implemented.) Each invocation is stateless at the process level; all
+durable state lives in two places:
 
 - **Notion** — the knowledge base: persona, strategy, the discovered
   HTTP "Action Catalog," diplomacy, and daily logs. This is what makes
@@ -179,9 +186,12 @@ and notifies you that a manual refresh is needed (see §8, §9).
 
 ## 10. Scheduling
 
-A cron-scheduled cloud agent (via the `schedule` skill) fires roughly
-hourly and runs the cycle in §8. Exact cron config is an implementation
-detail for the plan, not this spec.
+A **local** cron job (or systemd timer) on this machine fires roughly
+hourly, invoking `claude -p` headlessly from `/opt/ideas/games/ikarAI/`
+with a prompt telling it to follow `RUNBOOK.md`. This runs the cycle in
+§8 with full access to this machine's `.env`, `session/`, and scripts —
+exactly what the design in §3 requires. Exact cron config is an
+implementation detail for the plan, not this spec.
 
 ## 11. Known risks
 

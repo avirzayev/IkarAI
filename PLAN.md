@@ -1440,39 +1440,94 @@ Skipped — see Task 1 Step 7 note.
 
 ## Task 8: Configure the hourly cron schedule
 
+**Ruling (supersedes the original steps below):** A cron-scheduled
+*cloud* agent (via the `schedule` skill) cannot work for this project —
+cloud routines run in an isolated sandbox with no access to this
+machine's local files, `.env`, or `session/` cookie, which this entire
+project's state model depends on. Discovered when the `schedule` skill
+was actually invoked during execution; DESIGN.md §3/§10 updated to
+match. This task instead sets up a **local** cron job that invokes
+`claude -p` headlessly on this machine. Original steps struck through
+for the record; the replacement section below is what's actually built.
+
+~~**Files:**~~
+~~- None created — this task registers a cloud cron agent via the `schedule` skill; there's no local file artifact beyond what already exists.~~
+
+~~**Interfaces:**~~
+~~- Consumes: `RUNBOOK.md` (Task 7) by reference in the cron prompt.~~
+
+~~- [ ] **Step 1: Register the hourly cron agent**~~
+
+~~Invoke the `schedule` skill (not `CronCreate` directly — the skill~~
+~~handles the tool's exact schema) to create a routine:~~
+
+~~- Schedule: hourly (cron expression `0 * * * *`).~~
+~~- Prompt: `Follow /opt/ideas/games/ikarAI/RUNBOOK.md for this hour's IkarAI cycle. If the session cookie is invalid or missing, stop and notify rather than attempting to log in yourself.`~~
+~~- Working directory / context: this needs read/write access to `/opt/ideas/games/ikarAI/` and network access for both the Notion API and `s401-en.ikariam.gameforge.com`.~~
+
+~~- [ ] **Step 2: Trigger one run manually and verify end-to-end**~~
+
+~~Before trusting the hourly cadence, trigger the new routine once~~
+~~on-demand (the `schedule` skill/its listing supports a manual "run now").~~
+~~Confirm afterward:~~
+
+~~- A new or updated row appears in `NOTION_DAILY_LOGS_DB_ID` for today.~~
+~~- `session/action_request.txt` has a different value than before the run~~
+  ~~(proof the token-refresh chain worked).~~
+~~- No request was made to `intl14-shop.ikariam.gameforge.com` (check~~
+  ~~nothing purchase-related happened if you have any way to audit the~~
+  ~~run's tool calls/logs).~~
+
+~~- [ ] **Step 3: Confirm the schedule persists**~~
+
+~~List scheduled routines (via the `schedule` skill) and confirm the new~~
+~~hourly IkarAI routine shows up with the correct cron expression and is~~
+~~enabled.~~
+
+### Replacement: local cron job
+
 **Files:**
-- None created — this task registers a cloud cron agent via the `schedule` skill; there's no local file artifact beyond what already exists.
+- Create: `/opt/ideas/games/ikarAI/scripts/run_hourly_cycle.sh`
 
-**Interfaces:**
-- Consumes: `RUNBOOK.md` (Task 7) by reference in the cron prompt.
+- [ ] **Step 1: Write the wrapper script cron will invoke**
 
-- [ ] **Step 1: Register the hourly cron agent**
+```bash
+#!/usr/bin/env bash
+# /opt/ideas/games/ikarAI/scripts/run_hourly_cycle.sh
+set -euo pipefail
+cd /opt/ideas/games/ikarAI
+exec claude -p "Follow /opt/ideas/games/ikarAI/RUNBOOK.md for this hour's IkarAI cycle. If the session cookie is invalid or missing, stop and notify rather than attempting to log in yourself." \
+  --allowedTools "Bash,Read,Write,Edit" \
+  >> /opt/ideas/games/ikarAI/session/hourly.log 2>&1
+```
 
-Invoke the `schedule` skill (not `CronCreate` directly — the skill
-handles the tool's exact schema) to create a routine:
+Make it executable: `chmod +x /opt/ideas/games/ikarAI/scripts/run_hourly_cycle.sh`
 
-- Schedule: hourly (cron expression `0 * * * *`).
-- Prompt: `Follow /opt/ideas/games/ikarAI/RUNBOOK.md for this hour's IkarAI cycle. If the session cookie is invalid or missing, stop and notify rather than attempting to log in yourself.`
-- Working directory / context: this needs read/write access to `/opt/ideas/games/ikarAI/` and network access for both the Notion API and `s401-en.ikariam.gameforge.com`.
+- [ ] **Step 2: Install the hourly crontab entry**
 
-- [ ] **Step 2: Trigger one run manually and verify end-to-end**
+```bash
+(crontab -l 2>/dev/null; echo "0 * * * * /opt/ideas/games/ikarAI/scripts/run_hourly_cycle.sh") | crontab -
+```
 
-Before trusting the hourly cadence, trigger the new routine once
-on-demand (the `schedule` skill/its listing supports a manual "run now").
+Verify: `crontab -l` shows the new line.
+
+- [ ] **Step 3: Trigger one run manually and verify end-to-end**
+
+```bash
+/opt/ideas/games/ikarAI/scripts/run_hourly_cycle.sh
+```
+
 Confirm afterward:
-
+- `session/hourly.log` has fresh output from the run.
 - A new or updated row appears in `NOTION_DAILY_LOGS_DB_ID` for today.
 - `session/action_request.txt` has a different value than before the run
   (proof the token-refresh chain worked).
-- No request was made to `intl14-shop.ikariam.gameforge.com` (check
-  nothing purchase-related happened if you have any way to audit the
-  run's tool calls/logs).
+- No request was made to `intl14-shop.ikariam.gameforge.com`.
 
-- [ ] **Step 3: Confirm the schedule persists**
+- [ ] **Step 4: Commit**
 
-List scheduled routines (via the `schedule` skill) and confirm the new
-hourly IkarAI routine shows up with the correct cron expression and is
-enabled.
+Commit `scripts/run_hourly_cycle.sh` (the crontab entry itself is
+machine state, not a repo file, and isn't committed).
 
 ---
 
