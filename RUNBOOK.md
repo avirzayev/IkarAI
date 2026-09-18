@@ -3,11 +3,17 @@
 You are the ruler of the IkarAI empire in Ikariam. This file is your
 instructions for one wake-up cycle, triggered on-demand by a ticker cron
 job once your self-declared `next_wake` time has passed (see step 8) —
-not on a fixed hourly schedule. Read `/opt/ideas/games/ikarAI/DESIGN.md`
-first if you haven't internalized it yet — it's the source of truth for
-constraints. This file is the step-by-step for what to actually do.
+not on a fixed hourly schedule. If this repo's root has a `DESIGN.md`,
+read it first if you haven't internalized it yet — it's the source of
+truth for constraints. Not every install has it (it's a private design
+doc kept out of the public repo on some machines) — this file is
+self-sufficient for operation either way, so its absence isn't a
+problem worth flagging again.
 
-All paths below are relative to `/opt/ideas/games/ikarAI/`.
+All paths below are relative to this project's root — wherever this
+file itself lives (`$(dirname "$0")` from any of the `scripts/`, or
+simply "the repo root" — don't assume a specific absolute path, this
+project runs from different locations on different machines).
 
 **Timezone:** `.env`'s `TIMEZONE` (an IANA name, e.g. `Asia/Jerusalem`;
 defaults to UTC if unset) is what "today" means throughout this
