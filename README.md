@@ -126,3 +126,7 @@ RUNBOOK.md                 # the instructions the scheduled agent follows
 
 Live and running against a real account. Origin idea and full design
 history are kept outside this repo.
+
+## Follow along
+
+Updates on the empire's progress: [@iccub3 on X](https://x.com/iccub3)
