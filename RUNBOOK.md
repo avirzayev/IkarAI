@@ -95,8 +95,20 @@ Compare state against Strategy. Use your judgment. **You are not
 limited to one action per cycle** — take an action, reassess, and
 consider taking another if it's still worthwhile, repeating until
 there's genuinely nothing more productive to do this cycle (or you're
-waiting on something, like a build timer). Guidelines for each decision
-in the loop:
+waiting on something, like a build timer).
+
+**Before concluding there's nothing to do, review the whole Action
+Catalog — not just whatever you used last cycle.** It's easy to fall
+into only reaching for the same building-upgrade/research pattern
+every time and missing a documented, free action that's been sitting
+there unused. In particular: `workerPlan` (reallocating citizens
+between wood/luxury/scientists/priests, no cost) and `view:resource`
+(island resource tiles, may offer production independent of in-town
+buildings) have historically gone untried for cycles at a time despite
+being fully catalogued — check whether either applies before deciding
+to just wait out a locked research node. A free lever you haven't
+pulled yet is almost always worth more this cycle than a longer
+`next_wake`. Guidelines for each decision in the loop:
 
 - **Nothing to do right now is a fine place to stop.** Move to step 7.
 - **Known action needed:** look it up in the Action Catalog, call it via
@@ -152,8 +164,10 @@ alliance offer), update or create their row in `NOTION_DIPLOMACY_DB_ID`.
   UTC timestamp (`YYYY-MM-DDTHH:MM:SSZ`) to `session/next_wake.txt` via
   `scripts/session_store.write_next_wake()`. A ticker cron checks this
   every minute and only re-invokes this runbook once it's passed — so
-  you're not stuck on a fixed hourly cadence. Base it on what's actually
-  pending:
+  you're not stuck on a fixed hourly cadence. Only decide to wait after
+  step 6's Action Catalog review — waiting because a research node is
+  locked is not a valid reason to skip a free, already-catalogued lever
+  like `workerPlan` first. Base it on what's actually pending:
   - Something finishes soon (a build, research, unit training) → wake
     up shortly after it's expected to complete.
   - Nothing time-sensitive → a longer default, e.g. 30-180 minutes, is
