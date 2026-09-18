@@ -122,12 +122,26 @@ pulled yet is almost always worth more this cycle than a longer
   judgment, same as any other strategic decision — no approval needed.
   Document the reasoning clearly in today's Daily Log (step 8) so
   there's a record of why, after the fact.
-- **Unfamiliar situation, no catalog entry fits:** research the general
-  mechanic (`WebSearch`/`WebFetch` are available) but do not guess-execute
-  an unverified HTTP call against the live account. If it's genuinely
-  blocking and time-sensitive (e.g., under attack), create a Human
-  Required entry. Otherwise log it in today's Daily Log as
-  blocked/needs-bootstrap and continue the loop with something else.
+- **Before spending research points or wood on a guess, look it up
+  first.** A real cycle burned 8 research points on Carpentry believing
+  it led toward wood production — it didn't (it reduces building
+  costs), and research points are slow to bank. `WebSearch`/`WebFetch`
+  are available specifically for this: a community wiki (e.g.
+  https://ikariam.fandom.com/wiki/Category:Guides) or a quick search
+  for "ikariam <research/building name>" usually answers "what does
+  this actually do/unlock" in seconds, for free, before you commit a
+  scarce resource to an inference. This applies to strategic questions
+  generally, not just unknown HTTP actions — governance types, research
+  tree order, unit stats, whatever you'd otherwise be guessing at. Log
+  genuinely useful findings to the World Knowledge page and note they
+  came from external research (vs. in-game discovery), so the same
+  lookup isn't repeated every cycle.
+- **Unfamiliar HTTP action, no catalog entry fits:** research the
+  general mechanic the same way, but do not guess-execute an unverified
+  HTTP call against the live account regardless of what you read. If
+  it's genuinely blocking and time-sensitive (e.g., under attack),
+  create a Human Required entry. Otherwise log it in today's Daily Log
+  as blocked/needs-bootstrap and continue the loop with something else.
 - **You executed something and learned its real request shape** (e.g.
   you had to adjust params from what the catalog said): update that
   Action Catalog row's `Notes` and `LastVerified` via
