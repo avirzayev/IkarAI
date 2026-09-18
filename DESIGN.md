@@ -105,6 +105,11 @@ One parent page ("IkarAI Empire") shared with the integration, containing:
   relationship status (ally/enemy/neutral), history of interactions.
   This is what feeds the political/personality arc (grudges, revenge
   plans, alliances).
+- **Human Required** (database) — the notification mechanism (§9): a
+  row per thing the agent needs from you, title + a "Question" block
+  with context. You reply by adding content to the page in Notion; a
+  future cycle reads the reply and archives the row, so an empty
+  Human Required database means nothing is waiting on you.
 
 ## 7. Bootstrap (one-time, before scheduling starts)
 
@@ -137,31 +142,39 @@ implementation detail). The hourly cycle only ever reuses that cookie
 over HTTP; when it's invalid or expired, the agent stops for the run
 and notifies you that a manual refresh is needed (see §8, §9).
 
-## 8. Hourly cycle
+## 8. Wake-up cycle
 
-1. Load `.env`. Check `session/` for a cached cookie and validate it
-   with a lightweight GET. If missing or invalid, stop the run and
-   notify you that a manual cookie refresh is needed — the agent never
-   attempts to log in itself (see §7).
-2. Pull context from Notion: Persona, Strategy, the last few Daily Log
+Not a fixed hourly cadence — see §10. Each cycle:
+
+1. Check the **Human Required** Notion database for any entries the
+   human has replied to (extra content blocks beyond the agent's
+   original question); act on replies, then archive those rows so
+   they're removed once resolved — this is the notification mechanism
+   (see §9; no push notification exists, it's Notion-based).
+2. Load `.env`. Check `session/` for a cached cookie and validate it
+   with a lightweight GET. If missing or invalid, stop the run, create
+   a Human Required entry, pick a short next-wake time (§10), and exit
+   — the agent never attempts to log in itself (see §7).
+3. Pull context from Notion: Persona, Strategy, the last few Daily Log
    entries, the Action Catalog, and Diplomacy.
-3. Fetch current game state via already-documented GET actions
+4. Fetch current game state via already-documented GET actions
    (resources, city overview, messages/reports, military status).
-4. Decide: compare state against the current strategy and goals.
-   - If nothing actionable this hour, exit immediately — this is the
-     expected common case, matching IDEA point 4.
-   - If an action is needed and it's already in the Action Catalog,
-     execute it via HTTP.
-   - If an action is needed but undocumented, research it (web search
-     for the general mechanic) but do **not** guess-execute an
-     unverified HTTP call against the live account — log it in the
-     Daily Log as blocked/needs-bootstrap and notify you if it's
-     time-sensitive (e.g., under attack).
-5. Any newly-confirmed HTTP recipe gets written back into the Action
-   Catalog (this is the "modifies itself" behavior from IDEA point 5).
-6. Append to today's Daily Log entry (create it if this is the first
-   run of the day).
-7. Exit.
+5. Decide and act — **a loop, not a single step.** Take an action,
+   reassess, consider another, repeat until nothing more is worth
+   doing this cycle or you're waiting on something (a build timer,
+   etc.). Per decision:
+   - Nothing to do is a fine place to stop the loop.
+   - Known action in the Action Catalog → execute via HTTP.
+   - Undocumented action needed → research it (web search) but
+     **never** guess-execute an unverified HTTP call against the live
+     account — log it in the Daily Log as blocked, or create a Human
+     Required entry if genuinely time-sensitive (e.g., under attack).
+   - Newly-confirmed HTTP recipes get written back into the Action
+     Catalog (the "modifies itself" behavior from IDEA point 5).
+6. Update Diplomacy if this cycle involved another player/clan.
+7. Update (or create) today's Daily Log entry.
+8. Decide the next wake time based on what's pending, write it to
+   `session/next_wake.txt`, and exit (see §10).
 
 ## 9. Safety guardrails
 
@@ -170,28 +183,42 @@ and notifies you that a manual refresh is needed (see §8, §9).
   "considered, declined — policy," never executed. No user-approval
   override exists for this one; it's a flat rule, not a pause-and-ask.
 - **Destructive/high-blast-radius game actions** (disbanding the army,
-  leaving a clan, abandoning a city): pause and request your explicit
-  approval via push notification before executing, same as any other
-  hard-to-reverse action in this environment.
+  leaving a clan, abandoning a city): pause and create a Human Required
+  entry describing what would happen and why; only proceed once a
+  future cycle reads an explicit reply, same as any other hard-to-
+  reverse action in this environment.
 - **Unknown actions**: never guess-execute an undocumented HTTP call
-  against the live account (see §8 step 4).
+  against the live account (see §8 step 5).
 - **Session/anti-bot**: the agent never attempts to log in itself
   (see §7). If the cached session cookie is missing/invalid, or any
   response looks like a bot-detection challenge, stop the run and
-  notify you that a manual cookie refresh is needed, rather than
-  retrying or attempting to work around it.
-- **Rate limiting**: the hourly cadence itself is the main throttle;
-  within a single run, avoid firing a large burst of requests back to
-  back.
+  create a Human Required entry asking for a manual cookie refresh,
+  rather than retrying or attempting to work around it.
+- **Notifications**: there is no push-notification channel. "Notify
+  the human" always means: create a row in the **Human Required**
+  Notion database (title + a question block). The human reads Notion
+  and replies by adding content to that page; a future cycle picks up
+  the reply (§8 step 1) and archives the row once resolved.
+- **Rate limiting**: within a single cycle, avoid firing a large burst
+  of requests back to back. The self-paced wake interval (§10) is the
+  main throttle across cycles.
 
 ## 10. Scheduling
 
-A **local** cron job (or systemd timer) on this machine fires roughly
-hourly, invoking `claude -p` headlessly from `/opt/ideas/games/ikarAI/`
-with a prompt telling it to follow `RUNBOOK.md`. This runs the cycle in
-§8 with full access to this machine's `.env`, `session/`, and scripts —
-exactly what the design in §3 requires. Exact cron config is an
-implementation detail for the plan, not this spec.
+Self-paced, not a fixed hourly cadence. A lightweight **ticker** cron
+job runs every minute on this machine and checks `session/next_wake.txt`
+(an ISO-8601 UTC timestamp the agent writes at the end of each cycle,
+§8 step 8); if that time hasn't passed yet, the ticker exits
+immediately at near-zero cost. Once it has (or the file doesn't exist
+yet, e.g. before the first run), the ticker invokes `claude -p`
+headlessly from `/opt/ideas/games/ikarAI/` with a prompt telling it to
+follow `RUNBOOK.md`, running the cycle in §8 with full access to this
+machine's `.env`, `session/`, and scripts — exactly what the design in
+§3 requires. The agent decides its own pacing: shortly after something
+pending is expected to finish, or a longer default (tens of minutes to
+a few hours) when idle — never sub-5-minute waits out of habit. Exact
+ticker/cron config is an implementation detail for the plan, not this
+spec.
 
 ## 11. Known risks
 
