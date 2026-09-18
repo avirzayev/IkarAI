@@ -1,10 +1,15 @@
 #!/usr/bin/env bash
-# /opt/ideas/games/ikarAI/scripts/ticker.sh
+# scripts/ticker.sh
 # Runs every minute via cron. Only invokes the real cycle once the
 # agent's self-declared next_wake.txt time has passed (or isn't set
 # yet, e.g. before the first-ever run).
 set -euo pipefail
-cd /opt/ideas/games/ikarAI
+# Project root is wherever this script actually lives, not a hardcoded
+# path — makes the same committed script work regardless of install
+# location (e.g. /opt/ideas/games/ikarAI on one machine, /root/IkarAI
+# on another).
+PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$PROJECT_ROOT"
 
 NEXT_WAKE_FILE="session/next_wake.txt"
 NOW=$(date -u +%Y-%m-%dT%H:%M:%SZ)
@@ -16,4 +21,4 @@ if [ -f "$NEXT_WAKE_FILE" ]; then
   fi
 fi
 
-exec /opt/ideas/games/ikarAI/scripts/run_hourly_cycle.sh
+exec "$PROJECT_ROOT/scripts/run_hourly_cycle.sh"
