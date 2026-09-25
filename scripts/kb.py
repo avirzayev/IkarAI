@@ -322,10 +322,39 @@ def cmd_catalog_list(ctx: Ctx, args) -> int:
     return 0
 
 
-def _print_catalog_row_full(row: dict) -> None:
+NOTES_CHAR_CAP = 1500
+
+
+def _print_catalog_row_full(row: dict, full: bool = False) -> None:
     print(f"--- {nc.page_title(row)} ---")
-    for field in ("Kind", "Method", "Path", "Action", "Function", "Params", "LastVerified", "Notes"):
+    for field in ("Kind", "Method", "Path", "Action", "Function", "Params", "LastVerified"):
         print(f"{field}: {nc.prop_text(row, field)}")
+    notes = nc.prop_text(row, "Notes")
+    if full or len(notes) <= NOTES_CHAR_CAP:
+        print(f"Notes: {notes}")
+    else:
+        print(
+            f"Notes ({len(notes):,} chars, over the {NOTES_CHAR_CAP} cap — newest part shown; "
+            f"condense with `catalog upsert NAME --notes`, old notes are archived): "
+            f"… {notes[-NOTES_CHAR_CAP:]}"
+        )
+
+
+def _archive_text(ctx: "Ctx", config_attr: str, env_key: str, page_title: str, heading: str, text: str) -> None:
+    """Append `text` under a timestamped heading on an archive page nobody
+    reads in-cycle, creating the page lazily and persisting its id."""
+    archive_id = getattr(ctx.config, config_attr)
+    if not archive_id:
+        archive_id = bk.ensure_page(ctx.token, ctx.config.notion_root_page_id, page_title)
+        update_env_file(ctx.env_path, {env_key: archive_id})
+        setattr(ctx.config, config_attr, archive_id)
+    chunks = [text[i : i + 1900] for i in range(0, len(text), 1900)]
+    stamp = ctx.now_local.strftime("%Y-%m-%d %H:%M %Z")
+    _append_in_batches(
+        ctx.token,
+        archive_id,
+        [nc.heading3_block(f"{heading} — {stamp}")] + [nc.paragraph_block(c) for c in chunks],
+    )
 
 
 def cmd_catalog_show(ctx: Ctx, args) -> int:
@@ -333,7 +362,7 @@ def cmd_catalog_show(ctx: Ctx, args) -> int:
     for name in args.names:
         match = _find_exact(rows, name)
         if match:
-            _print_catalog_row_full(match)
+            _print_catalog_row_full(match, full=args.full)
             continue
         needle = name.strip().lower()
         substrings = [r for r in rows if needle in nc.page_title(r).strip().lower()][:5]
@@ -344,6 +373,15 @@ def cmd_catalog_show(ctx: Ctx, args) -> int:
         else:
             print(f"No match for '{name}'")
     return 0
+
+
+def _check_notes_cap(notes: str, flag: str) -> None:
+    if len(notes) > NOTES_CHAR_CAP:
+        raise KbError(
+            f"{flag} would make Notes {len(notes)} chars, over the {NOTES_CHAR_CAP} cap — "
+            "rewrite them condensed (what works, required params, gotchas) with --notes; "
+            "the old notes are archived automatically."
+        )
 
 
 def cmd_catalog_upsert(ctx: Ctx, args) -> int:
@@ -366,11 +404,18 @@ def cmd_catalog_upsert(ctx: Ctx, args) -> int:
             properties["Function"] = nc.rich_text_prop(args.function)
         if args.params is not None:
             properties["Params"] = nc.rich_text_prop(args.params)
+        current = nc.prop_text(match, "Notes")
         if args.notes is not None:
+            _check_notes_cap(args.notes, "--notes")
+            if current.strip() and current != args.notes:
+                _archive_text(
+                    ctx, "notion_catalog_archive_page_id", "NOTION_CATALOG_ARCHIVE_PAGE_ID",
+                    "Catalog Notes Archive", args.name, current,
+                )
             properties["Notes"] = nc.rich_text_prop(args.notes)
         elif args.append_notes is not None:
-            current = nc.prop_text(match, "Notes")
             new_notes = (current + "\n" if current else "") + f"[{today}] {args.append_notes}"
+            _check_notes_cap(new_notes, "--append-notes")
             properties["Notes"] = nc.rich_text_prop(new_notes)
         nc.update_page(ctx.token, match["id"], properties)
         kind_label = args.kind or nc.prop_text(match, "Kind")
@@ -379,6 +424,7 @@ def cmd_catalog_upsert(ctx: Ctx, args) -> int:
 
     if not args.kind or not args.method:
         raise KbError(f"no existing row named '{args.name}' — creating one requires --kind and --method")
+    _check_notes_cap(args.notes or "", "--notes")
     properties = {
         "Name": nc.title_prop(args.name),
         "Kind": nc.select_prop(args.kind),
@@ -705,6 +751,7 @@ def _build_parser() -> argparse.ArgumentParser:
 
     p_show = catalog_sub.add_parser("show")
     p_show.add_argument("names", nargs="+")
+    p_show.add_argument("--full", action="store_true", help="print Notes even past the cap")
     p_show.set_defaults(func=cmd_catalog_show)
 
     p_upsert = catalog_sub.add_parser("upsert")

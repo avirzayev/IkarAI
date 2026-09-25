@@ -60,6 +60,7 @@ echo "=== Cycle started $(date '+%Y-%m-%d %H:%M:%S %Z') ===" >> session/hourly.l
 # - --tools: only the tool definitions this agent actually uses.
 # - RUNBOOK.md goes in the system prompt (cached) instead of being Read.
 # Output is JSON so log_usage.py can record per-cycle token usage in Notion.
+WAKE_BEFORE="$(stat -c %Y session/next_wake.txt 2>/dev/null || echo none)"
 set +e
 "$CLAUDE_BIN" -p "Run one IkarAI cycle now, following the runbook in your system prompt." \
   --model "$MODEL" \
@@ -74,9 +75,18 @@ set +e
   --allowedTools "Bash,Read,Write,Edit,WebSearch,WebFetch" \
   --append-system-prompt "$(cat "$PROJECT_ROOT/RUNBOOK.md")" \
   "${BUDGET_ARGS[@]}" \
-  > session/last_run.json 2>> session/hourly.log
+  < /dev/null > session/last_run.json 2>> session/hourly.log
 STATUS=$?
 set -e
+
+# Safety net: a cycle that ends without `kb.py wake` (crash, budget cap,
+# or the agent pausing to wait on something) would otherwise leave a stale
+# next_wake and re-run every minute. Schedule a retry and say so in the log.
+if [ "$(stat -c %Y session/next_wake.txt 2>/dev/null || echo none)" = "$WAKE_BEFORE" ]; then
+  echo "[safety-net] cycle ended without setting next_wake — scheduling a retry in 30 min" >> session/hourly.log
+  python3 scripts/kb.py wake +30 >> session/hourly.log 2>&1 || true
+  python3 scripts/kb.py log add "⚠️ This cycle ended before finishing (no log entry or wake time was written). Retrying in 30 minutes — check session/hourly.log." >> session/hourly.log 2>&1 || true
+fi
 
 python3 scripts/log_usage.py session/last_run.json --exit-code "$STATUS" >> session/hourly.log 2>&1 || true
 exit "$STATUS"

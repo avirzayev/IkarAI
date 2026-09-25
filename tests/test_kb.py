@@ -695,3 +695,71 @@ def test_strategy_set_archives_huge_page_in_batches_of_100(mock_children, mock_d
             for rt in b[b["type"]]["rich_text"]:
                 assert len(rt["text"]["content"]) <= 2000
     assert mock_delete.call_count == 250
+
+
+def _notes_row(notes):
+    return _catalog_row("row-1", "action:Big", "action", "POST", notes=notes)
+
+
+@patch("kb.nc.query_database")
+def test_catalog_show_caps_long_notes_to_newest_tail(mock_query, tmp_path, capsys):
+    _write_env(tmp_path)
+    mock_query.return_value = [_notes_row("OLDEST " + "n" * 5000 + " NEWEST")]
+    assert kb.main(["catalog", "show", "action:Big"], project_root=tmp_path) == 0
+    out = capsys.readouterr().out
+    assert "OLDEST" not in out and "NEWEST" in out and "over the 1500 cap" in out
+    assert len(out) < 2200
+
+
+@patch("kb.nc.query_database")
+def test_catalog_show_full_prints_everything(mock_query, tmp_path, capsys):
+    _write_env(tmp_path)
+    mock_query.return_value = [_notes_row("OLDEST " + "n" * 5000)]
+    kb.main(["catalog", "show", "action:Big", "--full"], project_root=tmp_path)
+    assert "OLDEST" in capsys.readouterr().out
+
+
+@patch("kb.nc.update_page")
+@patch("kb.nc.query_database")
+def test_catalog_append_notes_rejected_past_cap(mock_query, mock_update, tmp_path, capsys):
+    _write_env(tmp_path)
+    mock_query.return_value = [_notes_row("x" * 1490)]
+    assert kb.main(["catalog", "upsert", "action:Big", "--append-notes", "more detail"], project_root=tmp_path) != 0
+    mock_update.assert_not_called()
+    assert "--notes" in capsys.readouterr().err
+
+
+@patch("kb.nc.update_page")
+@patch("kb.nc.query_database")
+def test_catalog_notes_over_cap_rejected(mock_query, mock_update, tmp_path):
+    _write_env(tmp_path)
+    mock_query.return_value = [_notes_row("short")]
+    assert kb.main(["catalog", "upsert", "action:Big", "--notes", "y" * 1600], project_root=tmp_path) != 0
+    mock_update.assert_not_called()
+
+
+@patch("kb.update_env_file")
+@patch("kb.bk.ensure_page", return_value="cat-archive")
+@patch("kb.nc.append_blocks")
+@patch("kb.nc.update_page")
+@patch("kb.nc.query_database")
+def test_catalog_notes_replace_archives_old_notes_first(
+    mock_query, mock_update, mock_append, mock_ensure, mock_env, tmp_path
+):
+    _write_env(tmp_path)
+    old = "z" * 4000
+    mock_query.return_value = [_notes_row(old)]
+    calls = []
+    mock_append.side_effect = lambda *a, **k: calls.append("archive")
+    mock_update.side_effect = lambda *a, **k: calls.append("update")
+    assert kb.main(["catalog", "upsert", "action:Big", "--notes", "Condensed."], project_root=tmp_path) == 0
+    assert calls[0] == "archive" and calls[-1] == "update"
+    archived = "".join(
+        rt["text"]["content"]
+        for c in mock_append.call_args_list
+        for b in c.args[2][1:]
+        for rt in b["paragraph"]["rich_text"]
+    )
+    assert archived == old
+    mock_ensure.assert_called_once()
+    assert mock_update.call_args.args[2]["Notes"]["rich_text"][0]["text"]["content"] == "Condensed."

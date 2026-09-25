@@ -25,6 +25,17 @@ below are your whole interface.
   wiki API or `WebSearch`, and save useful findings with
   `kb.py knowledge add` marked "(external research)".
 
+## This is a one-shot run
+
+You cannot be woken mid-cycle: the process ends when you stop making
+tool calls. So **never run commands in the background, never "pause" to
+wait for a notification, and never `sleep`/poll for more than ~2
+minutes.** If something you need (ships returning, a build finishing)
+is further off than that, finish everything else, log it as the plan for
+next cycle, and set `kb.py wake` to just after it's due. Always end with
+`kb.py log add` then `kb.py wake` — a cycle without them is treated as
+crashed.
+
 ## Token discipline
 
 Every character a command prints stays in your context for the rest of
@@ -35,7 +46,12 @@ the cycle, so:
   Raw JSON of every response is saved under `session/responses/`; use
   `jq`/`grep` on it only if the summary truly lacks something.
 - Fetch catalog details only for actions you're about to use
-  (`kb.py catalog show NAME`).
+  (`kb.py catalog show NAME`). Notes are capped at 1500 chars: keep them
+  a condensed reference (what works, required params, gotchas), not a
+  diary. If an append is refused, rewrite them with `--notes`; the old
+  text is archived automatically. Cycle stories go in the Daily Log.
+- Don't dig through `session/responses/*.json` with `jq` as a habit —
+  if a summary lacks something, one targeted `--grep` is usually enough.
 - Keep log entries and Strategy tight — facts and decisions, not prose.
 
 ## Commands
@@ -46,9 +62,14 @@ persisted automatically):
   production, queue). `SESSION_INVALID` = expired.
 - `set-cookie --cookie '<Cookie header>'` — install a fresh cookie from a
   human reply (derives the token itself).
-- `nav <view> [k=v ...] [--grep RE] [--max N]` — open a view.
+- `cities` — one block per own city: resources, city stats (growth,
+  happiness, corruption, wine, income, workers), construction/queue.
+  Use this instead of visiting cities one by one.
+- `nav <view> [k=v ...] [--grep RE] [--max N]` — open a view. Catalog
+  names work as-is (`nav view:townHall cityId=…`).
 - `action <action> [function] [k=v ...] [--grep RE]` — execute a
-  catalogued action; prints game feedback first.
+  catalogued action; catalog names work as-is
+  (`action action:IslandScreen:workerPlan …`). Prints game feedback first.
 
 Knowledge base (`python3 scripts/kb.py ...`):
 - `context` — everything you need to start: profile, strategy, open

@@ -10,6 +10,13 @@ Usage (from repo root):
     python3 scripts/game.py set-cookie [--cookie VALUE]   (or pipe via stdin)
     python3 scripts/game.py nav <view> [key=value ...] [--city ID] [--grep REGEX] [--max N]
     python3 scripts/game.py action <action> [function] [key=value ...] [--grep REGEX] [--max N]
+    python3 scripts/game.py cities [--city ID]
+
+`nav`/`action` accept Action Catalog names directly: a leading `view:` on
+the nav view is stripped (`view:researchAdvisor` -> `researchAdvisor`),
+and an action of the form `action:Name` or `action:Name:function` is split
+into action/function (`action:IslandScreen:workerPlan` -> action
+IslandScreen, function workerPlan).
 
 Every call that receives an HTTP response persists the rotated
 actionRequest token *before* printing anything, saves the raw response to
@@ -56,13 +63,29 @@ NOISE_KEY_TERMS = (
 # --------------------------------------------------------------------------
 
 
+def _to_float(value):
+    """Best-effort float conversion. The game API sometimes serializes
+    numeric fields (e.g. headerData.gold) as strings instead of numbers."""
+    if value is None or isinstance(value, bool):
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
 def _fmt_num(value) -> str:
+    """Round any numeric-looking value (float, int, or numeric string —
+    e.g. headerData.gold arrives as `"29479.83975277733"`) to an int."""
     if value is None:
         return "?"
     if isinstance(value, bool):
         return str(value)
-    if isinstance(value, float):
+    if isinstance(value, (int, float)):
         return str(int(round(value)))
+    as_float = _to_float(value)
+    if as_float is not None:
+        return str(int(round(as_float)))
     return str(value)
 
 
@@ -82,9 +105,9 @@ def summarize_header(header: dict) -> str:
     gold = header.get("gold")
     if gold is not None:
         seg = f"gold={_fmt_num(gold)}"
-        income = header.get("income")
+        income = _to_float(header.get("income"))
         if income is not None:
-            upkeep = header.get("upkeep") or 0
+            upkeep = _to_float(header.get("upkeep")) or 0
             net = income - upkeep
             if round(net) != 0:
                 seg += f" ({_fmt_signed(net)}/h)"
@@ -148,7 +171,9 @@ def _remaining_minutes(target_epoch, now) -> int | None:
 
 
 def summarize_queue(queue_eta_raw, now) -> str | None:
-    """queueETA is a JSON-encoded string: {"version": ..., "items": [...]}."""
+    """queueETA is a JSON-encoded string: {"version": ..., "items": [...]}.
+    Real items are empire-wide, keyed by `cityName` + `timestamp` (not a
+    task name/end-time pair), so render `<cityName> in <N>m`."""
     if not queue_eta_raw:
         return None
     data = queue_eta_raw
@@ -168,15 +193,15 @@ def summarize_queue(queue_eta_raw, now) -> str | None:
         if not isinstance(item, dict):
             bits.append(str(item))
             continue
-        label = item.get("type") or item.get("name") or item.get("action") or "task"
+        label = item.get("cityName") or item.get("type") or item.get("name") or item.get("action") or "task"
         target = None
-        for key in ("time", "endTime", "end", "completed"):
+        for key in ("timestamp", "time", "endTime", "end", "completed"):
             if item.get(key) is not None:
                 target = item.get(key)
                 break
         remaining = _remaining_minutes(target, now)
         if remaining is not None:
-            bits.append(f"{label} {remaining}m")
+            bits.append(f"{label} in {remaining}m")
         else:
             bits.append(str(label))
     return "queue: " + ", ".join(bits)
@@ -203,12 +228,17 @@ def summarize_construction(background: dict, now) -> str | None:
     positions = background.get("position") or []
     label = "?"
     if 0 <= under_idx < len(positions) and isinstance(positions[under_idx], dict):
-        label = positions[under_idx].get("building", "?")
+        slot = positions[under_idx]
+        label = slot.get("name") or slot.get("building", "?")
     return f"building: {label}@{under_idx} completes in {remaining}m"
 
 
 def summarize_city_positions(background: dict) -> str | None:
-    """`pos:building Llevel` for each occupied slot, city view only."""
+    """`idx:Name Llevel` for each occupied slot, city view only. Real slots
+    carry `name`/`level`/`buildingId`/`isBusy`/`canUpgrade` (a display name
+    like "Town Hall"); older/other shapes only have `building` (an internal
+    slug like "townhall") — prefer `name`, fall back to `building`. Empty
+    ground slots (buildingId None) are skipped."""
     if not isinstance(background, dict):
         return None
     positions = background.get("position")
@@ -223,11 +253,18 @@ def summarize_city_positions(background: dict) -> str | None:
     for idx, slot in enumerate(positions):
         if not isinstance(slot, dict) or slot.get("buildingId") is None:
             continue
-        building = slot.get("building", "?")
+        name = slot.get("name") or slot.get("building", "?")
         level = slot.get("level", "?")
-        bit = f"{idx}:{building} L{level}"
+        bit = f"{idx}:{name} L{level}"
+        markers = []
         if idx == under_idx:
-            bit += " (constructing)"
+            markers.append("constructing")
+        elif slot.get("isBusy"):
+            markers.append("busy")
+        if slot.get("canUpgrade"):
+            markers.append("upgradable")
+        if markers:
+            bit += f" ({', '.join(markers)})"
         bits.append(bit)
     if not bits:
         return None
@@ -258,6 +295,78 @@ def status_lines(global_data: dict) -> list:
             lines.append(positions_line)
 
     return lines
+
+
+_CITY_STATS_COUNT_KEYS = (
+    ("citizens", "CitizenCount"),
+    ("wood", "ResourceWorkerCount"),
+    ("special", "SpecialWorkerCount"),
+    ("sci", "ScientistCount"),
+    ("priests", "PriestCount"),
+)
+
+
+def summarize_city_stats(template: dict) -> str | None:
+    """Dedicated `city stats:` line for townHall-shaped updateTemplateData
+    (growth, happiness, corruption, wine bonus, income, worker counts).
+
+    These js_TownHall* keys are exactly what the agent kept digging for
+    with jq/python3 -c — put them in one line up front, printed *before*
+    the general (truncatable) template dump, so they survive summarization
+    even when unrelated keys would otherwise crowd them out."""
+    if not isinstance(template, dict):
+        return None
+
+    def text_of(key):
+        return _template_value_text(template.get(key))
+
+    bits = []
+
+    growth = text_of("js_TownHallPopulationGrowthValue")
+    if growth is not None:
+        bits.append(f"growth {growth.strip()}")
+
+    happy = text_of("js_TownHallHappinessLargeText") or text_of("js_TownHallHappinessSmallText")
+    happy_value = text_of("js_TownHallHappinessLargeValue")
+    if happy is not None:
+        label = happy
+        if happy_value is not None:
+            label += f" ({happy_value})"
+        bits.append(f"happy {label}")
+
+    corruption = text_of("js_TownHallCorruption")
+    if corruption is not None:
+        bits.append(f"corruption {corruption}")
+
+    tavern = text_of("js_TownHallSatisfactionOverviewWineBoniTavernBonusValue")
+    serve = text_of("js_TownHallSatisfactionOverviewWineBoniServeBonusValue")
+    if tavern is not None or serve is not None:
+        total = 0
+        for part in (tavern, serve):
+            if part is None:
+                continue
+            digits = re.sub(r"[^\d-]", "", part)
+            try:
+                total += int(digits) if digits else 0
+            except ValueError:
+                pass
+        bits.append(f"wine {_fmt_signed(total)}")
+
+    income = text_of("js_TownHallIncomeGoldValue")
+    if income is not None:
+        bits.append(f"income {income.strip()}")
+
+    counts = []
+    for label, key in _CITY_STATS_COUNT_KEYS:
+        value = template.get(key)
+        if isinstance(value, (int, float)) and not isinstance(value, bool):
+            counts.append(f"{label} {_fmt_num(value)}")
+    if counts:
+        bits.append(" ".join(counts))
+
+    if not bits:
+        return None
+    return "city stats: " + " | ".join(bits)
 
 
 # --------------------------------------------------------------------------
@@ -373,6 +482,16 @@ def build_view_summary(data: dict, path, max_chars: int = 2500, grep: str | None
     return text
 
 
+def looks_like_bad_view(data: dict) -> bool:
+    """True when a nav response has no changeView AND an empty
+    updateTemplateData ("" or {}) — the game's way of saying the view name
+    or params it received were invalid (e.g. a `view:` prefix was passed
+    straight through)."""
+    template = data.get("updateTemplateData")
+    has_template = isinstance(template, dict) and bool(template)
+    return not has_template and not data.get("changeView")
+
+
 def extract_feedback_lines(data: dict) -> list:
     lines = []
     error = data.get("error")
@@ -388,6 +507,74 @@ def extract_feedback_lines(data: dict) -> list:
             if clean:
                 lines.append(f"FEEDBACK: {clean}")
     return lines
+
+
+# --------------------------------------------------------------------------
+# Multi-city helpers (`cities` subcommand)
+# --------------------------------------------------------------------------
+
+_TRADEGOOD_NAMES = {"1": "wine", "2": "marble", "3": "crystal", "4": "sulfur"}
+
+
+def _tradegood_name(code) -> str:
+    if code is None:
+        return "?"
+    return _TRADEGOOD_NAMES.get(str(code), str(code))
+
+
+def own_cities(header: dict) -> list:
+    """Own-city entries from headerData.cityDropdownMenu — real shape is
+    {"city_<id>": {"id", "name", "coords", "tradegood", "relationship"}, ...}
+    plus "additionalInfo"/"selectedCity" string entries to ignore. Sorted by
+    id so `cities` output is stable across runs."""
+    menu = header.get("cityDropdownMenu") if isinstance(header, dict) else None
+    if not isinstance(menu, dict):
+        return []
+    cities = [
+        entry
+        for entry in menu.values()
+        if isinstance(entry, dict) and entry.get("relationship") == "ownCity"
+    ]
+    cities.sort(key=lambda c: c.get("id") or 0)
+    return cities
+
+
+def summarize_city_block(city: dict, data: dict, max_chars: int = 600) -> str:
+    """One `== Name (id) coords tradegood=X ==` block: header line (that
+    city's own resources), city stats, queue/construction if any."""
+    global_data = data.get("updateGlobalData") or {}
+    header = global_data.get("headerData") or {}
+    now = global_data.get("time")
+
+    name = city.get("name", "?")
+    city_id = city.get("id", "?")
+    coords = (city.get("coords") or "").strip()
+    tradegood = _tradegood_name(city.get("tradegood"))
+
+    lines = [f"== {name} ({city_id}) {coords} tradegood={tradegood} =="]
+
+    header_line = summarize_header(header)
+    if header_line:
+        lines.append(header_line)
+
+    stats_line = summarize_city_stats(data.get("updateTemplateData") or {})
+    if stats_line:
+        lines.append(stats_line)
+
+    queue_line = summarize_queue(global_data.get("queueETA"), now)
+    if queue_line:
+        lines.append(queue_line)
+
+    background = global_data.get("backgroundData")
+    if isinstance(background, dict):
+        constr_line = summarize_construction(background, now)
+        if constr_line:
+            lines.append(constr_line)
+
+    text = "\n".join(lines)
+    if max_chars is not None and len(text) > max_chars:
+        text = text[: max_chars - 1].rstrip() + "…"
+    return text
 
 
 # --------------------------------------------------------------------------
@@ -426,13 +613,35 @@ def parse_kv_args(tokens: list) -> dict:
     return result
 
 
+def _strip_view_prefix(view: str) -> str:
+    """Action Catalog names views like `view:researchAdvisor`; the game's
+    view= param wants just `researchAdvisor` — passing the prefix through
+    sends an invalid view and gets back an empty response."""
+    if view.startswith("view:"):
+        return view[len("view:"):]
+    return view
+
+
 def parse_action_args(remaining: list) -> tuple:
-    """action name, optional function positional, then key=value params."""
+    """action name, optional function positional, then key=value params.
+
+    The first positional may also be an Action Catalog name: `action:Name`
+    or `action:Name:function` (e.g. `action:IslandScreen:workerPlan` or
+    `action:BuildNewBuilding`), which is split into action/function. An
+    explicit function positional (no `=`) still wins over one parsed from
+    the catalog name.
+    """
     if not remaining:
         raise ValueError("action requires an action name")
     action = remaining[0]
     rest = remaining[1:]
+
     function = None
+    if action.startswith("action:"):
+        action = action[len("action:"):]
+        if ":" in action:
+            action, function = action.split(":", 1)
+
     if rest and "=" not in rest[0]:
         function = rest[0]
         rest = rest[1:]
@@ -550,7 +759,7 @@ def _cmd_nav(rest: list, session_dir: Path, env_path: Path) -> int:
     if not remaining:
         print("SESSION_INVALID: nav requires a view name")
         return 2
-    view = remaining[0]
+    view = _strip_view_prefix(remaining[0])
     try:
         kv = parse_kv_args(remaining[1:])
     except ValueError as exc:
@@ -582,10 +791,19 @@ def _cmd_nav(rest: list, session_dir: Path, env_path: Path) -> int:
     data = response_dict(response)
     for line in status_lines(data.get("updateGlobalData") or {}):
         print(line)
+    stats_line = summarize_city_stats(data.get("updateTemplateData") or {})
+    if stats_line:
+        print(stats_line)
     max_chars = int(options.get("max", 2500))
     summary = build_view_summary(data, path, max_chars=max_chars, grep=options.get("grep"))
     if summary:
         print(summary)
+    if looks_like_bad_view(data):
+        print(
+            "HINT: empty response (no changeView, no template data) — "
+            "the view name or params are probably wrong (nav strips a "
+            "leading 'view:' automatically; check cityId/position too)."
+        )
     print(f"[full response: {path}]")
     return 0
 
@@ -623,11 +841,70 @@ def _cmd_action(rest: list, session_dir: Path, env_path: Path) -> int:
         print(line)
     for line in status_lines(data.get("updateGlobalData") or {}):
         print(line)
+    stats_line = summarize_city_stats(data.get("updateTemplateData") or {})
+    if stats_line:
+        print(stats_line)
     max_chars = int(options.get("max", 2500))
     summary = build_view_summary(data, path, max_chars=max_chars, grep=options.get("grep"))
     if summary:
         print(summary)
     print(f"[full response: {path}]")
+    return 0
+
+
+def _cmd_cities(rest: list, session_dir: Path, env_path: Path) -> int:
+    """Loop over the account's own cities (headerData.cityDropdownMenu),
+    printing one compact block per city instead of the caller driving
+    `nav townHall --city ID` by hand for each one."""
+    remaining, options = _split_flags(rest)
+    del remaining  # cities takes no positionals
+    server = _server(env_path)
+    start_city_id = str(_city_id(env_path, options.get("city")))
+
+    try:
+        cookie = ss.read_cookie(session_dir)
+        token = ss.read_action_request(session_dir)
+    except ss.SessionError as exc:
+        print(f"SESSION_INVALID: {exc}")
+        return 2
+
+    state = {"token": token}
+
+    def fetch(city_id: str):
+        response = ic.call_nav(
+            server, cookie, state["token"], "townHall",
+            {"cityId": city_id, "position": "0", "currentCityId": city_id},
+        )
+        state["token"] = ic.extract_action_request(response)
+        ss.write_action_request(session_dir, state["token"])
+        path = _save_response(session_dir, f"townHall_{city_id}", response)
+        return response_dict(response), path
+
+    try:
+        data, path = fetch(start_city_id)
+    except ic.SessionInvalidError as exc:
+        print(f"SESSION_INVALID: {exc}")
+        return 2
+
+    header = (data.get("updateGlobalData") or {}).get("headerData") or {}
+    cities = own_cities(header)
+    if not cities:
+        print("no own cities found in headerData.cityDropdownMenu")
+        return 0
+
+    fetched = {start_city_id: (data, path)}
+    for city in cities:
+        city_id = str(city.get("id"))
+        if city_id not in fetched:
+            try:
+                fetched[city_id] = fetch(city_id)
+            except ic.SessionInvalidError as exc:
+                print(f"SESSION_INVALID: {exc}")
+                return 2
+        city_data, city_path = fetched[city_id]
+        print(summarize_city_block(city, city_data))
+        print(f"[full response: {city_path}]")
+
     return 0
 
 
@@ -641,7 +918,7 @@ def main(argv=None, project_root: Path | None = None) -> int:
     root = Path(project_root) if project_root is not None else PROJECT_ROOT
 
     if not args:
-        print("usage: game.py <session|set-cookie|nav|action> ...")
+        print("usage: game.py <session|set-cookie|nav|action|cities> ...")
         return 2
 
     sub, rest = args[0], args[1:]
@@ -660,6 +937,8 @@ def main(argv=None, project_root: Path | None = None) -> int:
             return _cmd_nav(rest, session_dir, env_path)
         if sub == "action":
             return _cmd_action(rest, session_dir, env_path)
+        if sub == "cities":
+            return _cmd_cities(rest, session_dir, env_path)
     except ValueError as exc:
         print(f"SESSION_INVALID: {exc}")
         return 2
