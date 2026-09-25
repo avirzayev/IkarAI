@@ -948,3 +948,570 @@ def test_cities_session_invalid_on_discovery_call(tmp_path, capsys):
     out = capsys.readouterr().out
     assert exit_code == 2
     assert "SESSION_INVALID: expired" in out
+
+
+# ---------------------------------------------------------------------------
+# `state` — small parsing/formatting helpers
+# (values below are trimmed from real session/responses/townHall_355955.json
+#  — Kernel, the account's capital — tokens were never present in that data)
+# ---------------------------------------------------------------------------
+
+
+def test_round_or_none_handles_numeric_string():
+    assert game._round_or_none("29479.83975277733") == 29480
+
+
+def test_round_or_none_none_for_bool_and_none():
+    assert game._round_or_none(True) is None
+    assert game._round_or_none(None) is None
+
+
+def test_parse_signed_int_strips_commas_and_plus():
+    assert game._parse_signed_int("+1,658") == 1658
+    assert game._parse_signed_int("-4,932") == -4932
+    assert game._parse_signed_int("308") == 308
+
+
+def test_parse_signed_int_none_for_empty_or_missing():
+    assert game._parse_signed_int("") is None
+    assert game._parse_signed_int(None) is None
+    assert game._parse_signed_int("not a number") is None
+
+
+def test_parse_float_strips_whitespace():
+    assert game._parse_float("0.09 ") == 0.09
+
+
+def test_parse_float_none_for_empty_or_missing():
+    assert game._parse_float("") is None
+    assert game._parse_float(None) is None
+
+
+def test_parse_percent_int_strips_percent_sign():
+    assert game._parse_percent_int("3%") == 3
+    assert game._parse_percent_int("28 %") == 28
+
+
+def test_parse_percent_int_none_for_missing():
+    assert game._parse_percent_int(None) is None
+
+
+def test_clean_coords_strips_brackets_and_space():
+    assert game._clean_coords("[53:67] ") == "53:67"
+
+
+def test_clean_coords_none_passthrough():
+    assert game._clean_coords(None) is None
+
+
+def test_find_position_locates_by_building_slug():
+    background = {"position": [{"building": "townhall"}, {"building": "tavern", "level": 8}]}
+    idx, slot = game._find_position(background, "tavern")
+    assert idx == 1
+    assert slot["level"] == 8
+
+
+def test_find_position_returns_none_when_absent():
+    assert game._find_position({"position": [{"building": "townhall"}]}, "tavern") is None
+    assert game._find_position({}, "tavern") is None
+    assert game._find_position(None, "tavern") is None
+
+
+def test_parse_queue_items_structured():
+    queue = json.dumps({"items": [{"timestamp": 1660, "cityName": "Kernel"}]})
+    assert game.parse_queue_items(queue, now=1600) == [{"city": "Kernel", "done_in_min": 1}]
+
+
+def test_parse_queue_items_empty():
+    assert game.parse_queue_items("", now=100) == []
+    assert game.parse_queue_items(json.dumps({"items": []}), now=100) == []
+
+
+# ---------------------------------------------------------------------------
+# `summarize_worker_allocation`
+# ---------------------------------------------------------------------------
+
+
+def test_summarize_worker_allocation_extracts_counts_and_production():
+    template = dict(
+        REAL_TOWNHALL_STATS_TEMPLATE,
+        js_TownHallPopulationGraphWoodProduction={"text": "+1,658"},
+        js_TownHallPopulationGraphTradeGoodProduction={"text": "+308"},
+    )
+    line = game.summarize_worker_allocation(template)
+    assert line == "workers: wood 548 (+1658/h) tradegood 100 (+308/h)"
+
+
+def test_summarize_worker_allocation_omits_production_when_absent():
+    line = game.summarize_worker_allocation(REAL_TOWNHALL_STATS_TEMPLATE)
+    assert line == "workers: wood 548 tradegood 100"
+
+
+def test_summarize_worker_allocation_returns_none_when_no_worker_keys():
+    assert game.summarize_worker_allocation({"js_other": {"text": "x"}}) is None
+
+
+def test_summarize_worker_allocation_non_dict_returns_none():
+    assert game.summarize_worker_allocation(None) is None
+    assert game.summarize_worker_allocation("") is None
+
+
+def test_nav_prints_worker_allocation_line_when_present(tmp_path, capsys):
+    _setup_session(tmp_path)
+    response = sample_response()
+    response[2] = ["updateTemplateData", dict(REAL_TEMPLATE_DATA, **REAL_TOWNHALL_STATS_TEMPLATE)]
+    with patch("game.ic.call_nav", return_value=response):
+        game.main(["nav", "townHall"], project_root=tmp_path)
+    out = capsys.readouterr().out
+    workers_lines = [ln for ln in out.splitlines() if ln.startswith("workers:")]
+    assert len(workers_lines) == 1
+    assert "wood 548" in workers_lines[0]
+
+
+# ---------------------------------------------------------------------------
+# `build_city_state` / `build_state` / `render_state_text`
+# (fixtures trimmed from real session/responses/townHall_355955.json — Kernel)
+# ---------------------------------------------------------------------------
+
+REAL_KERNEL_CITY = {"id": 355955, "name": "Kernel", "coords": "[53:67] ", "tradegood": 1}
+
+REAL_KERNEL_HEADER = {
+    "gold": "30456.49176993326",
+    "income": 2219.5790986118864,
+    "upkeep": -9,
+    "freeTransporters": 8,
+    "maxTransporters": 8,
+    "currentResources": {
+        "citizens": 106.32801247939938,
+        "population": 812.3280124793994,
+        "resource": 70578,
+        "1": 26826,
+        "2": 1911,
+        "3": 2081,
+        "4": 1017,
+    },
+    "maxResources": {"resource": 73920, "1": 73920, "2": 73920, "3": 73920, "4": 73920},
+    "wineSpendings": 129,
+    "producedTradegood": 1,
+    "advisors": {"military": {"cssclass": "premiumactive"}, "hasPremiumAccount": True},
+}
+
+REAL_KERNEL_TEMPLATE = {
+    "CitizenCount": 106,
+    "ResourceWorkerCount": 548,
+    "SpecialWorkerCount": 100,
+    "ScientistCount": 58,
+    "PriestCount": 0,
+    "js_TownHallCorruption": {"text": "3%"},
+    "js_TownHallHappinessLargeText": {"text": "neutral"},
+    "js_TownHallPopulationGrowthValue": {"text": "0.09 "},
+    "js_TownHallMaxInhabitants": {"text": "818"},
+    "js_TownHallPopulationGraphWoodProduction": {"text": "+1,658"},
+    "js_TownHallPopulationGraphTradeGoodProduction": {"text": "+308"},
+}
+
+REAL_KERNEL_POSITIONS = [
+    {"buildingId": 0, "name": "Town Hall", "level": 11, "building": "townhall", "isBusy": False},
+    {"buildingId": 9, "name": "Tavern", "level": 8, "building": "tavern", "isBusy": False, "canUpgrade": True},
+]
+
+REAL_KERNEL_BACKGROUND = {
+    "name": "Kernel",
+    "id": 355955,
+    "islandId": 692,
+    "underConstruction": -1,
+    "endUpgradeTime": -1,
+    "position": REAL_KERNEL_POSITIONS,
+}
+
+
+def _kernel_data(header=None, background=None, template=None, time=1790339344, queue_eta=""):
+    return {
+        "updateGlobalData": {
+            "time": time,
+            "headerData": header if header is not None else dict(REAL_KERNEL_HEADER),
+            "backgroundData": background if background is not None else dict(REAL_KERNEL_BACKGROUND),
+            "queueETA": queue_eta,
+        },
+        "updateTemplateData": template if template is not None else dict(REAL_KERNEL_TEMPLATE),
+    }
+
+
+def test_build_city_state_extracts_real_fields():
+    state = game.build_city_state(REAL_KERNEL_CITY, _kernel_data())
+    assert state["id"] == "355955"
+    assert state["name"] == "Kernel"
+    assert state["coords"] == "53:67"
+    assert state["island_id"] == "692"
+    assert state["tradegood"] == "wine"
+    assert state["resources"] == {"wood": 70578, "wine": 26826, "marble": 1911, "crystal": 2081, "sulfur": 1017}
+    assert state["max_resources"] == 73920
+    assert state["production_per_hour"] == {"wood": 1658, "tradegood": 308}
+    assert state["citizens"] == 106
+    assert state["population"] == 812
+    assert state["max_population"] == 818
+    assert state["growth_per_hour"] == 0.09
+    assert state["happiness"] == "neutral"
+    assert state["corruption_pct"] == 3
+    assert state["workers"] == {"wood": 548, "tradegood": 100, "scientists": 58, "priests": 0}
+    assert state["construction"] == []
+    assert {"position": 1, "name": "Tavern", "level": 8, "busy": False} in state["buildings"]
+
+
+def test_build_city_state_wine_per_hour_is_consumption_and_net_is_separate():
+    # Kernel's own tradegood is wine: production 308/h, tavern draw 129/h.
+    state = game.build_city_state(REAL_KERNEL_CITY, _kernel_data())
+    assert state["wine_per_hour"] == 129
+    assert state["wine_net_per_hour"] == 179  # 308 - 129
+    # net production is positive (cellar filling, not draining) -> not applicable
+    assert state["wine_hours_left"] == game.WINE_NOT_DRAINING
+
+
+def test_build_city_state_wine_hours_left_when_actually_draining():
+    # A city whose own tradegood is NOT wine (no wine production) but whose
+    # Tavern is drawing 500/h against a 26,826 stock. (`tradegood` is the
+    # CITY's own resource — from cityDropdownMenu — not headerData at all.)
+    marble_city = dict(REAL_KERNEL_CITY, tradegood=2)
+    header = dict(REAL_KERNEL_HEADER, wineSpendings=500)
+    state = game.build_city_state(marble_city, _kernel_data(header=header))
+    assert state["wine_per_hour"] == 500
+    assert state["wine_net_per_hour"] == -500
+    assert state["wine_hours_left"] == round(26826 / 500, 1)
+
+
+def test_build_city_state_tavern_fields_from_background_position():
+    state = game.build_city_state(REAL_KERNEL_CITY, _kernel_data())
+    assert state["tavern"] == {"position": 1, "level": 8, "wine_level": None, "max_wine_level": 8}
+
+
+def test_build_city_state_tavern_none_when_not_built():
+    background = dict(REAL_KERNEL_BACKGROUND, position=[REAL_KERNEL_POSITIONS[0]])
+    state = game.build_city_state(REAL_KERNEL_CITY, _kernel_data(background=background))
+    assert state["tavern"] is None
+    assert state["wine_hours_left"] == game.WINE_NOT_DRAINING  # governed by wineSpendings, not the tavern
+
+
+def test_build_city_state_construction_in_progress():
+    background = dict(REAL_KERNEL_BACKGROUND, underConstruction=1, endUpgradeTime=1790344391)
+    state = game.build_city_state(REAL_KERNEL_CITY, _kernel_data(background=background, time=1790339391))
+    assert state["construction"] == [{"building": "Tavern", "position": 1, "done_in_min": 83}]
+
+
+def test_build_city_state_no_construction_is_empty_list():
+    state = game.build_city_state(REAL_KERNEL_CITY, _kernel_data())
+    assert state["construction"] == []
+
+
+def test_build_city_state_missing_fields_are_null_not_guessed():
+    data = {
+        "updateGlobalData": {"time": 1, "headerData": {}, "backgroundData": {}, "queueETA": ""},
+        "updateTemplateData": {},
+    }
+    state = game.build_city_state({"id": 1, "name": "X", "coords": None, "tradegood": None}, data)
+    assert state["citizens"] is None
+    assert state["population"] is None
+    assert state["max_population"] is None
+    assert state["growth_per_hour"] is None
+    assert state["happiness"] is None
+    assert state["corruption_pct"] is None
+    assert state["tavern"] is None
+    assert state["wine_per_hour"] is None
+    assert state["wine_hours_left"] is None
+    assert state["max_resources"] is None
+    assert state["island_id"] is None
+    assert state["workers"] == {"wood": None, "tradegood": None, "scientists": None, "priests": None}
+    assert state["buildings"] == []
+    assert state["construction"] == []
+
+
+def test_build_state_top_level_fields_from_discovery_headerdata():
+    fetched = {"355955": (_kernel_data(), "path")}
+    global_data = _kernel_data()["updateGlobalData"]
+    state = game.build_state([REAL_KERNEL_CITY], fetched, global_data)
+    assert state["gold"] == 30456
+    assert state["gold_per_hour"] == 2229
+    assert state["transporters"] == {"free": 8, "max": 8}
+    assert state["alerts"] == {"under_attack": False, "unread_messages": None}
+    assert state["queue"] == []
+    assert len(state["cities"]) == 1
+    assert state["cities"][0]["name"] == "Kernel"
+
+
+def test_build_state_under_attack_true_when_alert_class_seen():
+    header = dict(REAL_KERNEL_HEADER, advisors={"military": {"cssclass": "normalalert"}})
+    global_data = {"time": 1, "headerData": header, "backgroundData": {}, "queueETA": ""}
+    state = game.build_state([], {}, global_data)
+    assert state["alerts"]["under_attack"] is True
+
+
+def test_build_state_under_attack_null_when_no_advisor_data():
+    global_data = {"time": 1, "headerData": {}, "backgroundData": {}, "queueETA": ""}
+    state = game.build_state([], {}, global_data)
+    assert state["alerts"]["under_attack"] is None
+
+
+def test_build_state_unread_messages_always_null():
+    # No saved real response carries an unread-mail counter (see
+    # build_state()'s docstring) — always null, never guessed.
+    global_data = _kernel_data()["updateGlobalData"]
+    state = game.build_state([], {}, global_data)
+    assert state["alerts"]["unread_messages"] is None
+
+
+def test_render_state_text_includes_header_and_city_block():
+    fetched = {"355955": (_kernel_data(), "path")}
+    global_data = _kernel_data()["updateGlobalData"]
+    state = game.build_state([REAL_KERNEL_CITY], fetched, global_data)
+    text = game.render_state_text(state)
+    assert "gold=30456" in text
+    assert "== Kernel (355955) 53:67 tradegood=wine ==" in text
+    assert "workers: wood 548 tradegood 100 scientists 58 priests 0" in text
+
+
+def test_render_city_text_truncates_at_500_chars():
+    city = {"name": "X", "id": 1, "coords": "1:1", "tradegood": "wine", "happiness": "z" * 600}
+    text = game._render_city_text(city)
+    assert len(text) <= 500
+    assert text.endswith("…")
+
+
+# ---------------------------------------------------------------------------
+# `state` subcommand: end-to-end CLI behavior with mocked HTTP
+# ---------------------------------------------------------------------------
+
+
+def test_state_json_output_written_to_file_and_printed(tmp_path, capsys):
+    session_dir = _setup_session(tmp_path)
+    responses = [
+        _city_response(355955, "Kernel", "statetoken1111111111111111111111"),
+        _city_response(356174, "Daemon", "statetoken2222222222222222222222"),
+    ]
+    with patch("game.ic.call_nav", side_effect=responses):
+        exit_code = game.main(["state", "--json"], project_root=tmp_path)
+    out = capsys.readouterr().out
+    assert exit_code == 0
+    payload = json.loads(out)
+    assert [c["name"] for c in payload["cities"]] == ["Kernel", "Daemon"]
+    assert payload["gold"] == 1649  # REAL_HEADER_DATA.gold rounds to 1649
+    saved = json.loads((session_dir / "state.json").read_text())
+    assert saved == payload
+
+
+def test_state_text_output_by_default(tmp_path, capsys):
+    _setup_session(tmp_path)
+    responses = [
+        _city_response(355955, "Kernel", "statetoken1111111111111111111111"),
+        _city_response(356174, "Daemon", "statetoken2222222222222222222222"),
+    ]
+    with patch("game.ic.call_nav", side_effect=responses):
+        exit_code = game.main(["state"], project_root=tmp_path)
+    out = capsys.readouterr().out
+    assert exit_code == 0
+    assert "== Kernel (355955)" in out
+    assert "gold=" in out
+    # --json output (raw JSON) must not leak into the default text rendering
+    assert not out.strip().startswith("{")
+
+
+def test_state_no_own_cities_found(tmp_path, capsys):
+    _setup_session(tmp_path)
+    response = _city_response(355955, "Kernel", "statetoken1111111111111111111111")
+    response[0][1]["headerData"] = dict(REAL_HEADER_DATA)  # no cityDropdownMenu
+    with patch("game.ic.call_nav", return_value=response):
+        exit_code = game.main(["state"], project_root=tmp_path)
+    out = capsys.readouterr().out
+    assert exit_code == 0
+    assert "no own cities found" in out
+
+
+def test_state_session_invalid_on_discovery_call(tmp_path, capsys):
+    _setup_session(tmp_path)
+    with patch("game.ic.call_nav", side_effect=ic.SessionInvalidError("expired")):
+        exit_code = game.main(["state"], project_root=tmp_path)
+    out = capsys.readouterr().out
+    assert exit_code == 2
+    assert "SESSION_INVALID: expired" in out
+
+
+def test_state_city_override_flag_used_as_discovery_city(tmp_path):
+    _setup_session(tmp_path)
+    response = _city_response(356174, "Daemon", "statetoken1111111111111111111111")
+    # give the override city its own dropdown menu (normally only 355955 has one)
+    response[0][1]["headerData"]["cityDropdownMenu"] = REAL_CITY_DROPDOWN_MENU
+    with patch("game.ic.call_nav", return_value=response) as mock_call_nav:
+        game.main(["state", "--city", "356174"], project_root=tmp_path)
+    args, kwargs = mock_call_nav.call_args_list[0]
+    assert args[4]["cityId"] == "356174"
+
+
+# ---------------------------------------------------------------------------
+# `batch` subcommand
+# ---------------------------------------------------------------------------
+
+
+def test_batch_runs_nav_and_action_lines_in_order(tmp_path, capsys, monkeypatch):
+    session_dir = _setup_session(tmp_path)
+    nav_response = sample_response(action_request="batchtoken1111111111111111111111")
+    action_response = sample_response(action_request="batchtoken2222222222222222222222")
+    monkeypatch.setattr(
+        "sys.stdin", __import__("io").StringIO("nav townHall\naction BuildNewBuilding position=12\n")
+    )
+    with patch("game.ic.call_nav", return_value=nav_response) as mock_nav, patch(
+        "game.ic.call_action", return_value=action_response
+    ) as mock_action:
+        exit_code = game.main(["batch"], project_root=tmp_path)
+    out = capsys.readouterr().out
+    assert exit_code == 0
+    assert mock_nav.called
+    assert mock_action.called
+    assert "## nav townHall" in out
+    assert "## action BuildNewBuilding position=12" in out
+    assert ss.read_action_request(session_dir) == "batchtoken2222222222222222222222"
+
+
+def test_batch_stops_at_first_failure_by_default(tmp_path, monkeypatch):
+    _setup_session(tmp_path)
+    monkeypatch.setattr(
+        "sys.stdin", __import__("io").StringIO("nav townHall\naction BuildNewBuilding position=12\n")
+    )
+    with patch("game.ic.call_nav", side_effect=ic.SessionInvalidError("expired")), patch(
+        "game.ic.call_action"
+    ) as mock_action:
+        exit_code = game.main(["batch"], project_root=tmp_path)
+    assert exit_code != 0
+    assert not mock_action.called
+
+
+def test_batch_keep_going_runs_all_lines_despite_failure(tmp_path, monkeypatch):
+    _setup_session(tmp_path)
+    ok_response = sample_response()
+    monkeypatch.setattr(
+        "sys.stdin", __import__("io").StringIO("nav townHall\naction BuildNewBuilding position=12\n")
+    )
+    with patch("game.ic.call_nav", side_effect=ic.SessionInvalidError("expired")), patch(
+        "game.ic.call_action", return_value=ok_response
+    ) as mock_action:
+        exit_code = game.main(["batch", "--keep-going"], project_root=tmp_path)
+    assert mock_action.called
+    assert exit_code != 0  # still non-zero: something in the batch failed
+
+
+def test_batch_all_lines_succeed_exits_zero(tmp_path, monkeypatch):
+    _setup_session(tmp_path)
+    response = sample_response()
+    monkeypatch.setattr("sys.stdin", __import__("io").StringIO("nav townHall\nnav townHall\n"))
+    with patch("game.ic.call_nav", return_value=response) as mock_nav:
+        exit_code = game.main(["batch"], project_root=tmp_path)
+    assert exit_code == 0
+    assert mock_nav.call_count == 2
+
+
+def test_batch_skips_blank_and_comment_lines(tmp_path, capsys, monkeypatch):
+    _setup_session(tmp_path)
+    response = sample_response()
+    monkeypatch.setattr("sys.stdin", __import__("io").StringIO("\n# a comment\nnav townHall\n"))
+    with patch("game.ic.call_nav", return_value=response) as mock_nav:
+        exit_code = game.main(["batch"], project_root=tmp_path)
+    out = capsys.readouterr().out
+    assert exit_code == 0
+    assert mock_nav.call_count == 1
+    assert "## # a comment" not in out
+
+
+def test_batch_unsupported_command_fails(tmp_path, monkeypatch):
+    _setup_session(tmp_path)
+    monkeypatch.setattr("sys.stdin", __import__("io").StringIO("bogus foo\n"))
+    exit_code = game.main(["batch"], project_root=tmp_path)
+    assert exit_code != 0
+
+
+# ---------------------------------------------------------------------------
+# `find` subcommand
+# ---------------------------------------------------------------------------
+
+
+def test_find_matches_path_or_value_case_insensitive(tmp_path, capsys):
+    session_dir = _setup_session(tmp_path)
+    responses_dir = session_dir / "responses"
+    responses_dir.mkdir(exist_ok=True)
+    raw = [["updateGlobalData", {"headerData": {"gold": 100, "wineSpendings": 129}}]]
+    (responses_dir / "last.json").write_text(json.dumps(raw))
+    exit_code = game.main(["find", "wine"], project_root=tmp_path)
+    out = capsys.readouterr().out
+    assert exit_code == 0
+    assert "updateGlobalData.headerData.wineSpendings = 129" in out
+
+
+def test_find_uses_custom_file(tmp_path, capsys):
+    _setup_session(tmp_path)
+    custom = tmp_path / "custom.json"
+    custom.write_text(json.dumps([["x", {"a": "hello world"}]]))
+    exit_code = game.main(["find", "hello", "--file", str(custom)], project_root=tmp_path)
+    out = capsys.readouterr().out
+    assert exit_code == 0
+    assert "x.a = hello world" in out
+
+
+def test_find_no_matches_reports_cleanly(tmp_path, capsys):
+    session_dir = _setup_session(tmp_path)
+    responses_dir = session_dir / "responses"
+    responses_dir.mkdir(exist_ok=True)
+    (responses_dir / "last.json").write_text(json.dumps([["x", {"a": 1}]]))
+    exit_code = game.main(["find", "zzz_not_found_anywhere"], project_root=tmp_path)
+    out = capsys.readouterr().out
+    assert exit_code == 0
+    assert "no matches" in out
+
+
+def test_find_missing_file_reports_session_invalid(tmp_path, capsys):
+    _setup_session(tmp_path)
+    exit_code = game.main(["find", "x", "--file", str(tmp_path / "nope.json")], project_root=tmp_path)
+    out = capsys.readouterr().out
+    assert exit_code == 2
+    assert out.startswith("SESSION_INVALID:")
+
+
+def test_find_requires_pattern(tmp_path, capsys):
+    exit_code = game.main(["find"], project_root=tmp_path)
+    out = capsys.readouterr().out
+    assert exit_code == 2
+    assert out.startswith("SESSION_INVALID:")
+
+
+def test_find_strips_html_and_matches_inner_text(tmp_path, capsys):
+    session_dir = _setup_session(tmp_path)
+    responses_dir = session_dir / "responses"
+    responses_dir.mkdir(exist_ok=True)
+    raw = [["x", {"html": "<p>hello there</p>"}]]
+    (responses_dir / "last.json").write_text(json.dumps(raw))
+    exit_code = game.main(["find", "hello"], project_root=tmp_path)
+    out = capsys.readouterr().out
+    assert exit_code == 0
+    assert "<p>" not in out
+    assert "hello there" in out
+
+
+def test_find_caps_at_40_matches(tmp_path, capsys):
+    session_dir = _setup_session(tmp_path)
+    responses_dir = session_dir / "responses"
+    responses_dir.mkdir(exist_ok=True)
+    raw = [["x", {f"k{i}": "wine" for i in range(60)}]]
+    (responses_dir / "last.json").write_text(json.dumps(raw))
+    exit_code = game.main(["find", "wine"], project_root=tmp_path)
+    out = capsys.readouterr().out
+    assert exit_code == 0
+    lines = [ln for ln in out.splitlines() if "wine" in ln]
+    assert len(lines) == 40
+
+
+def test_find_default_file_is_last_json(tmp_path, capsys):
+    session_dir = _setup_session(tmp_path)
+    responses_dir = session_dir / "responses"
+    responses_dir.mkdir(exist_ok=True)
+    (responses_dir / "last.json").write_text(json.dumps([["x", {"marker": "findme"}]]))
+    (responses_dir / "other.json").write_text(json.dumps([["x", {"marker": "not this one"}]]))
+    exit_code = game.main(["find", "findme"], project_root=tmp_path)
+    out = capsys.readouterr().out
+    assert exit_code == 0
+    assert "findme" in out
+    assert "not this one" not in out

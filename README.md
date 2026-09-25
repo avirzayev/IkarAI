@@ -93,6 +93,20 @@ The agent keeps `action_request.txt` fresh itself between refreshes
 (each response carries the next token); only the cookie needs periodic
 manual renewal.
 
+## Chores and the pre-tick gate
+
+Before any model cycle, `scripts/pretick.py` reads the whole empire's
+state (`game.py state`), runs **chores** — declarative upkeep rules stored
+in the Notion "Chores" database (e.g. ship wine to a city whose cellar is
+running dry) — and only starts the model if there's a real decision:
+an idle construction slot, a human reply, an attack, a failed chore, a
+chore review. Otherwise it just schedules the next check. The model
+writes new chores itself when it fixes the same problem twice; they run
+in dry-run (logged, no game calls) until promoted. Hard guardrails live
+in the runner: no real-money or destructive actions, max 5 actions per
+tick, and a `KILL SWITCH` row in the Chores DB. Spec: `docs/CHORES.md`;
+seed rules: `docs/chores/`.
+
 ## Token usage
 
 Each cycle runs `claude -p` with a deliberately lean setup (no user
@@ -127,6 +141,8 @@ scripts/
   kb.py                 # the agent's one-line Notion CLI (compact output)
   game.py               # the agent's one-line game CLI (compact summaries)
   log_usage.py          # writes each cycle's token usage to Notion
+  pretick.py            # state + chores + "is the model needed?" gate
+  chores.py             # chores engine + CLI (rules live in Notion)
   session_store.py      # session cookie / actionRequest / next_wake file I/O
   ikariam_client.py     # the Ikariam HTTP client
   run_hourly_cycle.sh    # invokes `claude -p` against RUNBOOK.md

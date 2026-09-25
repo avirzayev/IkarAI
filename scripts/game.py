@@ -11,6 +11,25 @@ Usage (from repo root):
     python3 scripts/game.py nav <view> [key=value ...] [--city ID] [--grep REGEX] [--max N]
     python3 scripts/game.py action <action> [function] [key=value ...] [--grep REGEX] [--max N]
     python3 scripts/game.py cities [--city ID]
+    python3 scripts/game.py state [--json] [--city ID]
+    python3 scripts/game.py batch [--keep-going]          (reads nav/action lines from stdin)
+    python3 scripts/game.py find PATTERN [--file PATH]    (default file: session/responses/last.json)
+
+`state` gathers every own city (like `cities`), extracts the docs/CHORES.md
+§1 fields (any field it can't reliably derive is `null` — see build_state()/
+build_city_state() docstrings for exactly which and why), and saves the
+result to session/responses/../state.json (session/state.json) in addition
+to printing it.
+
+`batch` runs a sequence of `nav`/`action` commands (one per stdin line, same
+argument syntax as the CLI) in a single process, printing `## <line>` before
+each command's usual output; it stops at the first failing line unless
+--keep-going is given, and exits non-zero if any line failed.
+
+`find` replaces ad-hoc `python3 -c` digging through session/responses/*.json:
+it walks the last saved raw response (or --file PATH) and prints every
+`dotted.path = value` line (HTML stripped, values truncated to 160 chars)
+whose path or value matches PATTERN case-insensitively, up to 40 lines.
 
 `nav`/`action` accept Action Catalog names directly: a leading `view:` on
 the nav view is stripped (`view:researchAdvisor` -> `researchAdvisor`),
@@ -28,6 +47,7 @@ more detail than the summary gives.
 import html
 import json
 import re
+import shlex
 import sys
 from pathlib import Path
 
@@ -39,6 +59,8 @@ import session_store as ss  # noqa: E402
 from config import parse_env_file  # noqa: E402
 
 DEFAULT_CITY_ID = "355955"
+# wine_hours_left value for a cellar that isn't shrinking (JSON has no inf).
+WINE_NOT_DRAINING = 9999
 
 RESOURCE_LABELS = [
     ("resource", "wood"),
@@ -93,6 +115,76 @@ def _fmt_signed(value) -> str:
     rounded = int(round(value))
     sign = "+" if rounded >= 0 else ""
     return f"{sign}{rounded}"
+
+
+def _round_or_none(value):
+    """Best-effort round-to-int, `None` on anything unparseable (bools are
+    intentionally NOT numbers here — same rule as `_to_float`)."""
+    as_float = _to_float(value)
+    if as_float is None:
+        return None
+    return int(round(as_float))
+
+
+def _parse_signed_int(text) -> int | None:
+    """"+1,658" / "-4,932" / "308" -> int. `None` on anything unparseable."""
+    if text is None:
+        return None
+    cleaned = str(text).strip().replace(",", "").replace("+", "")
+    if not cleaned:
+        return None
+    try:
+        return int(round(float(cleaned)))
+    except ValueError:
+        return None
+
+
+def _parse_float(text) -> float | None:
+    if text is None:
+        return None
+    cleaned = str(text).strip()
+    if not cleaned:
+        return None
+    try:
+        return float(cleaned)
+    except ValueError:
+        return None
+
+
+def _parse_percent_int(text) -> int | None:
+    """"3%" -> 3."""
+    if text is None:
+        return None
+    cleaned = str(text).strip().rstrip("%").strip()
+    if not cleaned:
+        return None
+    try:
+        return int(round(float(cleaned)))
+    except ValueError:
+        return None
+
+
+def _clean_coords(raw) -> str | None:
+    """"[53:67] " -> "53:67"."""
+    if raw is None:
+        return None
+    cleaned = str(raw).strip().strip("[]").strip()
+    return cleaned or None
+
+
+def _find_position(background: dict, building_slug: str):
+    """First (idx, slot) in backgroundData.position whose `building` slug
+    matches (e.g. "tavern") — internal slugs are stable across locales,
+    unlike the display `name`. `None` if not built in this city."""
+    if not isinstance(background, dict):
+        return None
+    positions = background.get("position")
+    if not positions:
+        return None
+    for idx, slot in enumerate(positions):
+        if isinstance(slot, dict) and slot.get("building") == building_slug:
+            return idx, slot
+    return None
 
 
 def summarize_header(header: dict) -> str:
@@ -170,21 +262,27 @@ def _remaining_minutes(target_epoch, now) -> int | None:
     return max(0, round(remaining))
 
 
-def summarize_queue(queue_eta_raw, now) -> str | None:
+def _parse_queue_eta(queue_eta_raw) -> list:
     """queueETA is a JSON-encoded string: {"version": ..., "items": [...]}.
-    Real items are empire-wide, keyed by `cityName` + `timestamp` (not a
-    task name/end-time pair), so render `<cityName> in <N>m`."""
+    Returns the raw `items` list (possibly empty)."""
     if not queue_eta_raw:
-        return None
+        return []
     data = queue_eta_raw
     if isinstance(data, str):
         try:
             data = json.loads(data)
         except (TypeError, ValueError):
-            return None
+            return []
     if not isinstance(data, dict):
-        return None
+        return []
     items = data.get("items")
+    return items if isinstance(items, list) else []
+
+
+def summarize_queue(queue_eta_raw, now) -> str | None:
+    """Real items are empire-wide, keyed by `cityName` + `timestamp` (not a
+    task name/end-time pair), so render `<cityName> in <N>m`."""
+    items = _parse_queue_eta(queue_eta_raw)
     if not items:
         return None
 
@@ -205,6 +303,23 @@ def summarize_queue(queue_eta_raw, now) -> str | None:
         else:
             bits.append(str(label))
     return "queue: " + ", ".join(bits)
+
+
+def parse_queue_items(queue_eta_raw, now) -> list:
+    """Structured variant of summarize_queue: [{"city": ..., "done_in_min": ...}, ...]."""
+    items = _parse_queue_eta(queue_eta_raw)
+    result = []
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        label = item.get("cityName") or item.get("type") or item.get("name") or item.get("action")
+        target = None
+        for key in ("timestamp", "time", "endTime", "end", "completed"):
+            if item.get(key) is not None:
+                target = item.get(key)
+                break
+        result.append({"city": label, "done_in_min": _remaining_minutes(target, now)})
+    return result
 
 
 def summarize_construction(background: dict, now) -> str | None:
@@ -367,6 +482,40 @@ def summarize_city_stats(template: dict) -> str | None:
     if not bits:
         return None
     return "city stats: " + " | ".join(bits)
+
+
+def summarize_worker_allocation(template: dict) -> str | None:
+    """Compact `workers:` line for a townHall-shaped updateTemplateData —
+    current wood/tradegood worker counts plus their hourly production, when
+    present. IslandScreen:workerPlan's success response is townHall-shaped
+    too (same js_TownHallPopulationGraph* keys — see Action Catalog notes),
+    so this line shows up automatically after a worker reallocation without
+    a second call. No per-resource "max" cap is included: none of the
+    captured real responses carry one (the caps only appear as <input
+    max=...> attributes in the workerPlan popup's rendered HTML, which no
+    successful saved sample includes)."""
+    if not isinstance(template, dict):
+        return None
+
+    wood = template.get("ResourceWorkerCount")
+    tradegood = template.get("SpecialWorkerCount")
+    wood_prod = _parse_signed_int(_template_value_text(template.get("js_TownHallPopulationGraphWoodProduction")))
+    trade_prod = _parse_signed_int(_template_value_text(template.get("js_TownHallPopulationGraphTradeGoodProduction")))
+
+    bits = []
+    if isinstance(wood, (int, float)) and not isinstance(wood, bool):
+        bit = f"wood {_fmt_num(wood)}"
+        if wood_prod is not None:
+            bit += f" ({_fmt_signed(wood_prod)}/h)"
+        bits.append(bit)
+    if isinstance(tradegood, (int, float)) and not isinstance(tradegood, bool):
+        bit = f"tradegood {_fmt_num(tradegood)}"
+        if trade_prod is not None:
+            bit += f" ({_fmt_signed(trade_prod)}/h)"
+        bits.append(bit)
+    if not bits:
+        return None
+    return "workers: " + " ".join(bits)
 
 
 # --------------------------------------------------------------------------
@@ -581,7 +730,7 @@ def summarize_city_block(city: dict, data: dict, max_chars: int = 600) -> str:
 # Argument parsing
 # --------------------------------------------------------------------------
 
-_FLAG_NAMES = {"--city": "city", "--grep": "grep", "--max": "max"}
+_FLAG_NAMES = {"--city": "city", "--grep": "grep", "--max": "max", "--file": "file"}
 
 
 def _split_flags(tokens: list) -> tuple:
@@ -794,6 +943,9 @@ def _cmd_nav(rest: list, session_dir: Path, env_path: Path) -> int:
     stats_line = summarize_city_stats(data.get("updateTemplateData") or {})
     if stats_line:
         print(stats_line)
+    workers_line = summarize_worker_allocation(data.get("updateTemplateData") or {})
+    if workers_line:
+        print(workers_line)
     max_chars = int(options.get("max", 2500))
     summary = build_view_summary(data, path, max_chars=max_chars, grep=options.get("grep"))
     if summary:
@@ -844,12 +996,46 @@ def _cmd_action(rest: list, session_dir: Path, env_path: Path) -> int:
     stats_line = summarize_city_stats(data.get("updateTemplateData") or {})
     if stats_line:
         print(stats_line)
+    workers_line = summarize_worker_allocation(data.get("updateTemplateData") or {})
+    if workers_line:
+        print(workers_line)
     max_chars = int(options.get("max", 2500))
     summary = build_view_summary(data, path, max_chars=max_chars, grep=options.get("grep"))
     if summary:
         print(summary)
     print(f"[full response: {path}]")
     return 0
+
+
+def _fetch_own_cities(server: str, cookie: str, token: str, session_dir: Path, start_city_id: str) -> tuple:
+    """nav townHall for `start_city_id` (discovers the account's own cities
+    from headerData.cityDropdownMenu), then nav townHall for every other own
+    city, persisting the rotating token after each call. Returns
+    `(cities, fetched)`: `cities` is own_cities()'s (id-sorted) list, and
+    `fetched` maps str(city_id) -> (response_dict, response_path). Raises
+    ic.SessionInvalidError if any of the calls fail."""
+    state = {"token": token}
+
+    def fetch(city_id: str):
+        response = ic.call_nav(
+            server, cookie, state["token"], "townHall",
+            {"cityId": city_id, "position": "0", "currentCityId": city_id},
+        )
+        state["token"] = ic.extract_action_request(response)
+        ss.write_action_request(session_dir, state["token"])
+        path = _save_response(session_dir, f"townHall_{city_id}", response)
+        return response_dict(response), path
+
+    data, path = fetch(start_city_id)
+    header = (data.get("updateGlobalData") or {}).get("headerData") or {}
+    cities = own_cities(header)
+
+    fetched = {start_city_id: (data, path)}
+    for city in cities:
+        city_id = str(city.get("id"))
+        if city_id not in fetched:
+            fetched[city_id] = fetch(city_id)
+    return cities, fetched
 
 
 def _cmd_cities(rest: list, session_dir: Path, env_path: Path) -> int:
@@ -868,43 +1054,521 @@ def _cmd_cities(rest: list, session_dir: Path, env_path: Path) -> int:
         print(f"SESSION_INVALID: {exc}")
         return 2
 
-    state = {"token": token}
-
-    def fetch(city_id: str):
-        response = ic.call_nav(
-            server, cookie, state["token"], "townHall",
-            {"cityId": city_id, "position": "0", "currentCityId": city_id},
-        )
-        state["token"] = ic.extract_action_request(response)
-        ss.write_action_request(session_dir, state["token"])
-        path = _save_response(session_dir, f"townHall_{city_id}", response)
-        return response_dict(response), path
-
     try:
-        data, path = fetch(start_city_id)
+        cities, fetched = _fetch_own_cities(server, cookie, token, session_dir, start_city_id)
     except ic.SessionInvalidError as exc:
         print(f"SESSION_INVALID: {exc}")
         return 2
 
-    header = (data.get("updateGlobalData") or {}).get("headerData") or {}
-    cities = own_cities(header)
     if not cities:
         print("no own cities found in headerData.cityDropdownMenu")
         return 0
 
-    fetched = {start_city_id: (data, path)}
     for city in cities:
         city_id = str(city.get("id"))
-        if city_id not in fetched:
-            try:
-                fetched[city_id] = fetch(city_id)
-            except ic.SessionInvalidError as exc:
-                print(f"SESSION_INVALID: {exc}")
-                return 2
         city_data, city_path = fetched[city_id]
         print(summarize_city_block(city, city_data))
         print(f"[full response: {city_path}]")
 
+    return 0
+
+
+# --------------------------------------------------------------------------
+# Structured state (`state` subcommand) — docs/CHORES.md §1
+# --------------------------------------------------------------------------
+
+
+def build_city_state(city: dict, data: dict) -> dict:
+    """One `cities[]` entry of the docs/CHORES.md §1 state shape, built
+    entirely from a single townHall nav response (updateGlobalData +
+    updateTemplateData) — the same response `cities`/`_fetch_own_cities`
+    already fetches, no extra call per city.
+
+    Fields left `null` (and why — see the `state` CLI report for the full
+    rationale, not repeated per-field here):
+    - tavern.wine_level: headerData.wineSpendings gives the current wine
+      draw/hour, but the serving ladder (0,12,24,39,54,72,90,108,...) is
+      non-linear and only documented up to L7 (Action Catalog note on
+      action:CityScreen:assignWinePerTick) — inverting it to a level index
+      would be a guess above that. Reading it exactly needs a dedicated
+      `nav tavern position=<pos>` call to the rendered <select>, which no
+      real saved response exists for yet.
+    - alerts-style per-field notes live in build_state(), not here.
+    """
+    global_data = data.get("updateGlobalData") or {}
+    header = global_data.get("headerData") or {}
+    template = data.get("updateTemplateData") or {}
+    background = global_data.get("backgroundData") or {}
+    now = global_data.get("time")
+
+    current = header.get("currentResources") or {}
+    maxres = header.get("maxResources") or {}
+
+    tradegood = _tradegood_name(city.get("tradegood"))
+
+    resources = {
+        "wood": _round_or_none(current.get("resource")),
+        "wine": _round_or_none(current.get("1")),
+        "marble": _round_or_none(current.get("2")),
+        "crystal": _round_or_none(current.get("3")),
+        "sulfur": _round_or_none(current.get("4")),
+    }
+    max_resources = _round_or_none(maxres.get("resource"))
+
+    wood_prod = _parse_signed_int(_template_value_text(template.get("js_TownHallPopulationGraphWoodProduction")))
+    trade_prod = _parse_signed_int(_template_value_text(template.get("js_TownHallPopulationGraphTradeGoodProduction")))
+    production_per_hour = {"wood": wood_prod, "tradegood": trade_prod}
+
+    # wine_per_hour / wine_hours_left: only the city whose own tradegood is
+    # wine produces it; every city can spend it via its Tavern. wineSpendings
+    # is the current hourly draw (0 = Tavern off/no wine, per the Action
+    # Catalog note); net_drain > 0 is how fast the cellar empties.
+    # Per docs/CHORES.md: wine_per_hour is the Tavern's consumption (≥ 0);
+    # wine_net_per_hour is production minus consumption; wine_hours_left is
+    # stock / net drain, or WINE_NOT_DRAINING when the cellar isn't shrinking
+    # (so a `wine_hours_left < N` chore clause is simply false, not null).
+    wine_spendings = _to_float(header.get("wineSpendings"))
+    wine_production = trade_prod if (tradegood == "wine" and trade_prod is not None) else 0
+    wine_per_hour = None
+    wine_net_per_hour = None
+    wine_hours_left = None
+    if wine_spendings is not None:
+        wine_per_hour = int(round(wine_spendings))
+        wine_net_per_hour = int(round(wine_production - wine_spendings))
+        net_drain = wine_spendings - wine_production
+        current_wine = resources["wine"]
+        if net_drain <= 0:
+            wine_hours_left = WINE_NOT_DRAINING
+        elif current_wine is not None:
+            wine_hours_left = round(current_wine / net_drain, 1)
+
+    tavern_hit = _find_position(background, "tavern")
+    tavern = None
+    if tavern_hit is not None:
+        idx, slot = tavern_hit
+        level = slot.get("level")
+        tavern = {
+            "position": idx,
+            "level": level,
+            "wine_level": None,
+            # Action Catalog note on assignWinePerTick: "Tavern level caps N"
+            # — the serving index can't exceed the building's own level.
+            "max_wine_level": level,
+        }
+
+    citizens = template.get("CitizenCount")
+    if not (isinstance(citizens, (int, float)) and not isinstance(citizens, bool)):
+        citizens = None
+
+    workers_raw = {
+        "wood": template.get("ResourceWorkerCount"),
+        "tradegood": template.get("SpecialWorkerCount"),
+        "scientists": template.get("ScientistCount"),
+        "priests": template.get("PriestCount"),
+    }
+    workers = {
+        k: (v if isinstance(v, (int, float)) and not isinstance(v, bool) else None)
+        for k, v in workers_raw.items()
+    }
+
+    construction = []
+    try:
+        under_idx = int(background.get("underConstruction"))
+    except (TypeError, ValueError):
+        under_idx = -1
+    if under_idx >= 0:
+        end = background.get("endUpgradeTime")
+        remaining = _remaining_minutes(end, now) if end not in (None, -1) else None
+        positions = background.get("position") or []
+        name = None
+        if 0 <= under_idx < len(positions) and isinstance(positions[under_idx], dict):
+            name = positions[under_idx].get("name") or positions[under_idx].get("building")
+        construction.append({"building": name, "position": under_idx, "done_in_min": remaining})
+
+    buildings = []
+    for idx, slot in enumerate(background.get("position") or []):
+        if not isinstance(slot, dict) or slot.get("buildingId") is None:
+            continue
+        buildings.append(
+            {
+                "position": idx,
+                "name": slot.get("name") or slot.get("building"),
+                "level": slot.get("level"),
+                "busy": bool(slot.get("isBusy")),
+            }
+        )
+
+    city_id = city.get("id")
+
+    return {
+        "id": str(city_id) if city_id is not None else None,
+        "name": city.get("name"),
+        "coords": _clean_coords(city.get("coords")),
+        "island_id": str(background.get("islandId")) if background.get("islandId") is not None else None,
+        "tradegood": tradegood,
+        "resources": resources,
+        "max_resources": max_resources,
+        "production_per_hour": production_per_hour,
+        "wine_per_hour": wine_per_hour,
+        "wine_net_per_hour": wine_net_per_hour,
+        "wine_hours_left": wine_hours_left,
+        "tavern": tavern,
+        "citizens": citizens,
+        "population": _round_or_none(current.get("population")),
+        "max_population": _parse_signed_int(_template_value_text(template.get("js_TownHallMaxInhabitants"))),
+        "growth_per_hour": _parse_float(_template_value_text(template.get("js_TownHallPopulationGrowthValue"))),
+        "happiness": _template_value_text(template.get("js_TownHallHappinessLargeText"))
+        or _template_value_text(template.get("js_TownHallHappinessSmallText")),
+        "corruption_pct": _parse_percent_int(_template_value_text(template.get("js_TownHallCorruption"))),
+        "workers": workers,
+        "construction": construction,
+        "buildings": buildings,
+    }
+
+
+def build_state(cities: list, fetched: dict, global_data: dict) -> dict:
+    """Top-level docs/CHORES.md §1 state dict. `global_data` is the
+    updateGlobalData of the discovery call — gold/transporters/alerts/queue
+    are account-wide (verified against real captured data: identical
+    headerData.gold/income/upkeep/freeTransporters/maxTransporters across
+    all 4 own cities' townHall responses), so any one call's headerData is
+    the right source for them.
+
+    `alerts.unread_messages` is always `null`: no saved real response (any
+    townHall/action call) carries an unread-mail counter — headerData.
+    advisors has no "messages" entry (only military/cities/research/
+    diplomacy/hasPremiumAccount on this premium account), and
+    ingameCounterData was `null` in every capture. A dedicated mail/message
+    view would be needed to fill this in.
+
+    `alerts.under_attack` is derived from headerData.advisors.military.
+    cssclass containing "alert" (the mechanic docs/CHORES.md §1 describes:
+    "normalalert"/"normalactive" for a non-premium account). This account
+    is premium, so its classes are "premiumactive"/"premium" instead —
+    never "alert" in any of the captures, all of which were made while NOT
+    under attack, so the true "under attack" class string is unverified.
+    The substring rule is the best-effort, non-guessing interpretation of
+    the documented mechanic; it currently evaluates to `False` for this
+    account rather than `null`, since the css class IS present and known
+    to not contain "alert".
+    """
+    header = global_data.get("headerData") or {}
+    now = global_data.get("time")
+
+    income = _to_float(header.get("income"))
+    upkeep = _to_float(header.get("upkeep")) or 0
+    gold_per_hour = int(round(income - upkeep)) if income is not None else None
+
+    free_t = header.get("freeTransporters")
+    max_t = header.get("maxTransporters")
+    transporters = {
+        "free": _round_or_none(free_t),
+        "max": _round_or_none(max_t),
+    }
+
+    military_class = None
+    advisors = header.get("advisors")
+    if isinstance(advisors, dict):
+        military = advisors.get("military")
+        if isinstance(military, dict):
+            military_class = military.get("cssclass")
+    under_attack = "alert" in str(military_class).lower() if military_class is not None else None
+
+    alerts = {"under_attack": under_attack, "unread_messages": None}
+
+    queue = parse_queue_items(global_data.get("queueETA"), now)
+
+    city_states = []
+    for city in cities:
+        city_id = str(city.get("id"))
+        city_data = fetched.get(city_id, (None, None))[0] or {}
+        city_states.append(build_city_state(city, city_data))
+
+    return {
+        "time": now,
+        "gold": _round_or_none(header.get("gold")),
+        "gold_per_hour": gold_per_hour,
+        "transporters": transporters,
+        "alerts": alerts,
+        "queue": queue,
+        "cities": city_states,
+    }
+
+
+def _render_city_text(city: dict) -> str:
+    """Compact multi-line block for one city, capped at ~500 chars."""
+    name = city.get("name") or "?"
+    city_id = city.get("id") or "?"
+    coords = city.get("coords") or ""
+    tradegood = city.get("tradegood") or "?"
+    lines = [f"== {name} ({city_id}) {coords} tradegood={tradegood} =="]
+
+    res = city.get("resources") or {}
+    res_bits = [
+        f"{label} {res[label]}"
+        for label in ("wood", "wine", "marble", "crystal", "sulfur")
+        if res.get(label) is not None
+    ]
+    if res_bits:
+        line = " ".join(res_bits)
+        if city.get("max_resources") is not None:
+            line += f" (max {city['max_resources']})"
+        lines.append(line)
+
+    stat_bits = []
+    if city.get("population") is not None:
+        stat_bits.append(f"pop {city['population']}/{city.get('max_population', '?')}")
+    if city.get("growth_per_hour") is not None:
+        stat_bits.append(f"growth {city['growth_per_hour']}")
+    if city.get("happiness") is not None:
+        stat_bits.append(f"happy {city['happiness']}")
+    if city.get("corruption_pct") is not None:
+        stat_bits.append(f"corruption {city['corruption_pct']}%")
+    if stat_bits:
+        lines.append(" | ".join(stat_bits))
+
+    wine_bits = []
+    tavern = city.get("tavern")
+    if tavern:
+        wl = tavern.get("wine_level")
+        wine_bits.append(
+            f"tavern L{tavern.get('level', '?')}@{tavern.get('position', '?')} "
+            f"level {wl if wl is not None else '?'}/{tavern.get('max_wine_level', '?')}"
+        )
+    if city.get("wine_per_hour") is not None:
+        wine_bits.append(f"wine -{city['wine_per_hour']}/h (net {_fmt_signed(city.get('wine_net_per_hour') or 0)}/h)")
+    if city.get("wine_hours_left") is not None:
+        wine_bits.append("not draining" if city["wine_hours_left"] == WINE_NOT_DRAINING else f"{city['wine_hours_left']}h left")
+    if wine_bits:
+        lines.append(" ".join(wine_bits))
+
+    workers = city.get("workers") or {}
+    w_bits = [f"{k} {workers[k]}" for k in ("wood", "tradegood", "scientists", "priests") if workers.get(k) is not None]
+    if w_bits:
+        lines.append("workers: " + " ".join(w_bits))
+
+    construction = city.get("construction") or []
+    if construction:
+        c = construction[0]
+        done = c.get("done_in_min")
+        bit = f"building: {c.get('building', '?')}@{c.get('position', '?')}"
+        if done is not None:
+            bit += f" done in {done}m"
+        lines.append(bit)
+    else:
+        lines.append("no construction in progress")
+
+    text = "\n".join(lines)
+    if len(text) > 500:
+        text = text[:499].rstrip() + "…"
+    return text
+
+
+def render_state_text(state: dict) -> str:
+    """Compact text rendering of the full `state` dict (no --json)."""
+    lines = []
+
+    header_bits = []
+    if state.get("gold") is not None:
+        bit = f"gold={state['gold']}"
+        if state.get("gold_per_hour") is not None:
+            bit += f" ({_fmt_signed(state['gold_per_hour'])}/h)"
+        header_bits.append(bit)
+    transporters = state.get("transporters") or {}
+    if transporters.get("free") is not None or transporters.get("max") is not None:
+        header_bits.append(f"transporters {transporters.get('free', '?')}/{transporters.get('max', '?')}")
+    alerts = state.get("alerts") or {}
+    alert_bits = []
+    if alerts.get("under_attack"):
+        alert_bits.append("UNDER ATTACK")
+    if alerts.get("unread_messages"):
+        alert_bits.append(f"{alerts['unread_messages']} unread")
+    if alert_bits:
+        header_bits.append("ALERTS: " + ", ".join(alert_bits))
+    if header_bits:
+        lines.append(" | ".join(header_bits))
+
+    queue = state.get("queue") or []
+    if queue:
+        bits = []
+        for item in queue:
+            mins = item.get("done_in_min")
+            label = item.get("city") or "task"
+            bits.append(f"{label} in {mins}m" if mins is not None else str(label))
+        lines.append("queue: " + ", ".join(bits))
+
+    for city in state.get("cities") or []:
+        lines.append(_render_city_text(city))
+
+    return "\n".join(lines)
+
+
+def _cmd_state(rest: list, session_dir: Path, env_path: Path) -> int:
+    remaining, options = _split_flags(rest)
+    as_json = "--json" in remaining
+    server = _server(env_path)
+    start_city_id = str(_city_id(env_path, options.get("city")))
+
+    try:
+        cookie = ss.read_cookie(session_dir)
+        token = ss.read_action_request(session_dir)
+    except ss.SessionError as exc:
+        print(f"SESSION_INVALID: {exc}")
+        return 2
+
+    try:
+        cities, fetched = _fetch_own_cities(server, cookie, token, session_dir, start_city_id)
+    except ic.SessionInvalidError as exc:
+        print(f"SESSION_INVALID: {exc}")
+        return 2
+
+    if not cities:
+        print("no own cities found in headerData.cityDropdownMenu")
+        return 0
+
+    discovery_data = fetched[start_city_id][0]
+    global_data = discovery_data.get("updateGlobalData") or {}
+    state_obj = build_state(cities, fetched, global_data)
+
+    (session_dir / "state.json").write_text(json.dumps(state_obj, indent=2))
+
+    if as_json:
+        print(json.dumps(state_obj, indent=2))
+    else:
+        text = render_state_text(state_obj)
+        if text:
+            print(text)
+    return 0
+
+
+# --------------------------------------------------------------------------
+# Batch (`batch` subcommand)
+# --------------------------------------------------------------------------
+
+
+def _cmd_batch(rest: list, session_dir: Path, env_path: Path) -> int:
+    """Read `nav`/`action` command lines from stdin (one per line, args
+    exactly as on the CLI, e.g. `action action:IslandScreen:workerPlan
+    cityId=1 wood=10`), run them sequentially in this one process, printing
+    `## <line>` then that command's normal output. Stops at the first
+    failure unless --keep-going; the rotating token is persisted after each
+    line (nav/action already do this)."""
+    keep_going = "--keep-going" in rest
+    any_failed = False
+
+    for raw_line in sys.stdin:
+        line = raw_line.strip()
+        if not line or line.startswith("#"):
+            continue
+        print(f"## {line}")
+        try:
+            tokens = shlex.split(line)
+        except ValueError as exc:
+            print(f"SESSION_INVALID: bad line: {exc}")
+            any_failed = True
+            if not keep_going:
+                return 1
+            continue
+        if not tokens:
+            continue
+
+        cmd, cmd_rest = tokens[0], tokens[1:]
+        if cmd == "nav":
+            code = _cmd_nav(cmd_rest, session_dir, env_path)
+        elif cmd == "action":
+            code = _cmd_action(cmd_rest, session_dir, env_path)
+        else:
+            print(f"SESSION_INVALID: unsupported batch command: {cmd}")
+            code = 2
+
+        if code != 0:
+            any_failed = True
+            if not keep_going:
+                return code
+
+    return 1 if any_failed else 0
+
+
+# --------------------------------------------------------------------------
+# Find (`find` subcommand)
+# --------------------------------------------------------------------------
+
+
+def _walk_json(obj, prefix: str = ""):
+    """Yield (dotted.path, leaf_value) for every leaf in a JSON-ish
+    structure of nested dicts/lists (list indices become path segments)."""
+    if isinstance(obj, dict):
+        for key, value in obj.items():
+            yield from _walk_json(value, f"{prefix}.{key}" if prefix else str(key))
+    elif isinstance(obj, list):
+        for idx, value in enumerate(obj):
+            yield from _walk_json(value, f"{prefix}.{idx}" if prefix else str(idx))
+    else:
+        yield prefix, obj
+
+
+def _find_value_text(value) -> str:
+    """Render a leaf value for `find` output: HTML stripped, truncated to
+    160 chars."""
+    if value is None:
+        text = "null"
+    elif isinstance(value, bool):
+        text = str(value)
+    elif isinstance(value, str):
+        text = html_to_text(value) if "<" in value else value
+        text = text.replace("\n", " ").strip()
+    else:
+        text = str(value)
+    if len(text) > 160:
+        text = text[:159] + "…"
+    return text
+
+
+def _cmd_find(rest: list, session_dir: Path, env_path: Path) -> int:
+    """Case-insensitive search over a saved raw response (default
+    session/responses/last.json): walk the JSON and print matching
+    `dotted.path = value` lines, max 40. Replaces ad-hoc `python3 -c`
+    digging through session/responses/*.json."""
+    del env_path
+    remaining, options = _split_flags(rest)
+    if not remaining:
+        print("SESSION_INVALID: find requires a PATTERN")
+        return 2
+    pattern_str = remaining[0]
+
+    file_opt = options.get("file")
+    path = Path(file_opt) if file_opt else session_dir / "responses" / "last.json"
+
+    try:
+        raw = json.loads(path.read_text())
+    except OSError as exc:
+        print(f"SESSION_INVALID: could not read {path}: {exc}")
+        return 2
+    except ValueError as exc:
+        print(f"SESSION_INVALID: could not parse {path} as JSON: {exc}")
+        return 2
+
+    try:
+        pattern = re.compile(pattern_str, re.IGNORECASE)
+    except re.error as exc:
+        print(f"SESSION_INVALID: bad pattern: {exc}")
+        return 2
+
+    top = response_dict(raw) if isinstance(raw, list) else raw
+
+    matches = []
+    for dotted, value in _walk_json(top):
+        line = f"{dotted} = {_find_value_text(value)}"
+        if pattern.search(line):
+            matches.append(line)
+            if len(matches) >= 40:
+                break
+
+    if not matches:
+        print("no matches")
+        return 0
+    for line in matches:
+        print(line)
     return 0
 
 
@@ -918,7 +1582,7 @@ def main(argv=None, project_root: Path | None = None) -> int:
     root = Path(project_root) if project_root is not None else PROJECT_ROOT
 
     if not args:
-        print("usage: game.py <session|set-cookie|nav|action|cities> ...")
+        print("usage: game.py <session|set-cookie|nav|action|cities|state|batch|find> ...")
         return 2
 
     sub, rest = args[0], args[1:]
@@ -939,6 +1603,12 @@ def main(argv=None, project_root: Path | None = None) -> int:
             return _cmd_action(rest, session_dir, env_path)
         if sub == "cities":
             return _cmd_cities(rest, session_dir, env_path)
+        if sub == "state":
+            return _cmd_state(rest, session_dir, env_path)
+        if sub == "batch":
+            return _cmd_batch(rest, session_dir, env_path)
+        if sub == "find":
+            return _cmd_find(rest, session_dir, env_path)
     except ValueError as exc:
         print(f"SESSION_INVALID: {exc}")
         return 2

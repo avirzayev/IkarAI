@@ -49,6 +49,32 @@ flock -n 9 || exit 0
 echo "" >> session/hourly.log
 echo "=== Cycle started $(date '+%Y-%m-%d %H:%M:%S %Z') ===" >> session/hourly.log
 
+# Pre-tick gate (docs/CHORES.md): read game state, run chores, and decide
+# whether the model is needed at all. Exit 0 = fully handled (next_wake
+# already written); 10 = wake the model; anything else = pretick itself
+# failed, so fail open and run the model. IKARAI_SKIP_PRETICK=1 bypasses it.
+REASONS="heavy: pretick skipped"
+if [ "${IKARAI_SKIP_PRETICK:-0}" != "1" ]; then
+  rm -f session/wake_reasons.txt
+  set +e
+  python3 scripts/pretick.py >> session/hourly.log 2>&1
+  PRETICK=$?
+  set -e
+  if [ "$PRETICK" -eq 0 ]; then
+    echo "[pretick] handled without the model" >> session/hourly.log
+    exit 0
+  fi
+  REASONS="$(cat session/wake_reasons.txt 2>/dev/null || echo "heavy: pretick exited $PRETICK")"
+fi
+
+# Only-light reasons (chore review/promotion, periodic check-in) may run on
+# a cheaper model/effort if configured.
+if ! grep -qv '^light:' <<< "$REASONS"; then
+  MODEL="${IKARAI_LIGHT_MODEL:-$MODEL}"
+  EFFORT="${IKARAI_LIGHT_EFFORT:-$EFFORT}"
+fi
+echo "[wake] model=$MODEL effort=$EFFORT reasons: $(tr '\n' ';' <<< "$REASONS")" >> session/hourly.log
+
 # Token diet:
 # - --setting-sources project,local: skip ~/.claude user settings, so the
 #   operator's personal plugins/hooks/skills (superpowers, ecc, ...) don't
@@ -62,7 +88,8 @@ echo "=== Cycle started $(date '+%Y-%m-%d %H:%M:%S %Z') ===" >> session/hourly.l
 # Output is JSON so log_usage.py can record per-cycle token usage in Notion.
 WAKE_BEFORE="$(stat -c %Y session/next_wake.txt 2>/dev/null || echo none)"
 set +e
-"$CLAUDE_BIN" -p "Run one IkarAI cycle now, following the runbook in your system prompt." \
+"$CLAUDE_BIN" -p "Run one IkarAI cycle now, following the runbook in your system prompt. The pre-tick check woke you for:
+$REASONS" \
   --model "$MODEL" \
   --effort "$EFFORT" \
   --output-format json \
@@ -78,6 +105,11 @@ set +e
   < /dev/null > session/last_run.json 2>> session/hourly.log
 STATUS=$?
 set -e
+
+date -u +%Y-%m-%dT%H:%M:%SZ > session/last_llm_cycle.txt
+if grep -qi 'review' <<< "$REASONS"; then
+  date -u +%Y-%m-%dT%H:%M:%SZ > session/last_review.txt
+fi
 
 # Safety net: a cycle that ends without `kb.py wake` (crash, budget cap,
 # or the agent pausing to wait on something) would otherwise leave a stale

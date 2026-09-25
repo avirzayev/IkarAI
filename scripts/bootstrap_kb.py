@@ -53,6 +53,27 @@ HUMAN_REQUIRED_SCHEMA = {
     "CreatedAt": {"date": {}},
 }
 
+CHORES_SCHEMA = {
+    "Name": {"title": {}},
+    "Status": {
+        "select": {
+            "options": [
+                {"name": "proposed"},
+                {"name": "dry-run"},
+                {"name": "active"},
+                {"name": "disabled"},
+            ]
+        }
+    },
+    "Rule": {"rich_text": {}},
+    "Why": {"rich_text": {}},
+    "DryRunsOK": {"number": {"format": "number"}},
+    "Runs": {"number": {"format": "number"}},
+    "Failures": {"number": {"format": "number"}},
+    "LastRun": {"date": {}},
+    "LastResult": {"rich_text": {}},
+}
+
 
 def find_child_by_title(token: str, parent_page_id: str, title: str, object_type: str) -> str | None:
     results = nc.search(token, query=title)
@@ -170,6 +191,7 @@ def main() -> None:
     diplomacy_id = ensure_database(token, root, "Diplomacy", DIPLOMACY_SCHEMA)
     human_required_id = ensure_database(token, root, "Human Required", HUMAN_REQUIRED_SCHEMA)
     token_usage_id = ensure_database(token, root, "Token Usage", TOKEN_USAGE_SCHEMA)
+    chores_id = ensure_database(token, root, "Chores", CHORES_SCHEMA)
     profile_id = ensure_page(token, root, "Profile & Persona", build_persona_children(config))
     strategy_id = ensure_page(token, root, "Strategy", build_strategy_children())
     world_id = ensure_page(token, root, "World Knowledge", [nc.heading2_block("Learned Mechanics")])
@@ -187,6 +209,7 @@ def main() -> None:
             "NOTION_WORLD_KNOWLEDGE_PAGE_ID": world_id,
             "NOTION_STRATEGY_ARCHIVE_PAGE_ID": strategy_archive_id,
             "NOTION_TOKEN_USAGE_DB_ID": token_usage_id,
+            "NOTION_CHORES_DB_ID": chores_id,
         },
     )
 
