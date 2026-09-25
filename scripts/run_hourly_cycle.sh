@@ -32,9 +32,51 @@ source .env
 set +a
 export TZ="${TIMEZONE:-UTC}"
 
+# Model/effort are pinned here rather than inherited from ~/.claude
+# settings, which this run deliberately doesn't load (see below).
+MODEL="${IKARAI_MODEL:-claude-sonnet-5}"
+EFFORT="${IKARAI_EFFORT:-medium}"
+BUDGET_ARGS=()
+if [ -n "${IKARAI_MAX_BUDGET_USD:-}" ]; then
+  BUDGET_ARGS=(--max-budget-usd "$IKARAI_MAX_BUDGET_USD")
+fi
+
+# The ticker fires every minute; if the previous cycle is still running,
+# quietly skip (before logging anything, so the log isn't spammed).
+exec 9>session/run.lock
+flock -n 9 || exit 0
+
 echo "" >> session/hourly.log
 echo "=== Cycle started $(date '+%Y-%m-%d %H:%M:%S %Z') ===" >> session/hourly.log
 
-exec flock -n session/run.lock "$CLAUDE_BIN" -p "Follow $PROJECT_ROOT/RUNBOOK.md for this cycle. If the session cookie is invalid or missing, stop, create a Human Required entry, and do not attempt to log in yourself." \
+# Token diet:
+# - --setting-sources project,local: skip ~/.claude user settings, so the
+#   operator's personal plugins/hooks/skills (superpowers, ecc, ...) don't
+#   ride along in every turn's context.
+# - autoMemoryEnabled false: cycles are stateless by design (state lives
+#   in Notion); auto-memory only added noise, e.g. nudging DESIGN.md reads.
+# - --strict-mcp-config / --no-chrome / --disable-slash-commands: no MCP
+#   servers, browser tools or skill listings.
+# - --tools: only the tool definitions this agent actually uses.
+# - RUNBOOK.md goes in the system prompt (cached) instead of being Read.
+# Output is JSON so log_usage.py can record per-cycle token usage in Notion.
+set +e
+"$CLAUDE_BIN" -p "Run one IkarAI cycle now, following the runbook in your system prompt." \
+  --model "$MODEL" \
+  --effort "$EFFORT" \
+  --output-format json \
+  --setting-sources project,local \
+  --settings '{"autoMemoryEnabled": false}' \
+  --strict-mcp-config \
+  --no-chrome \
+  --disable-slash-commands \
+  --tools "Bash,Read,Write,Edit,WebSearch,WebFetch" \
   --allowedTools "Bash,Read,Write,Edit,WebSearch,WebFetch" \
-  >> "$PROJECT_ROOT/session/hourly.log" 2>&1
+  --append-system-prompt "$(cat "$PROJECT_ROOT/RUNBOOK.md")" \
+  "${BUDGET_ARGS[@]}" \
+  > session/last_run.json 2>> session/hourly.log
+STATUS=$?
+set -e
+
+python3 scripts/log_usage.py session/last_run.json --exit-code "$STATUS" >> session/hourly.log 2>&1 || true
+exit "$STATUS"

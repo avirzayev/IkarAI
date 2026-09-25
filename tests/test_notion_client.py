@@ -164,3 +164,128 @@ def test_archive_page_sets_archived_true(mock_patch):
     args, kwargs = mock_patch.call_args
     assert args[0] == "https://api.notion.com/v1/pages/page-1"
     assert kwargs["json"] == {"archived": True}
+
+
+@patch("notion_client.requests.post")
+def test_query_database_paginates_across_multiple_pages(mock_post):
+    page1 = _mock_response({"results": [{"id": "row-1"}], "has_more": True, "next_cursor": "cursor-1"})
+    page2 = _mock_response({"results": [{"id": "row-2"}], "has_more": False, "next_cursor": None})
+    mock_post.side_effect = [page1, page2]
+    result = nc.query_database("tok", "db-1")
+    assert result == [{"id": "row-1"}, {"id": "row-2"}]
+    assert mock_post.call_count == 2
+    first_kwargs = mock_post.call_args_list[0][1]
+    assert "start_cursor" not in first_kwargs["json"]
+    second_kwargs = mock_post.call_args_list[1][1]
+    assert second_kwargs["json"]["start_cursor"] == "cursor-1"
+
+
+@patch("notion_client.requests.post")
+def test_query_database_stops_when_has_more_false(mock_post):
+    mock_post.return_value = _mock_response({"results": [{"id": "row-1"}], "has_more": False})
+    result = nc.query_database("tok", "db-1")
+    assert result == [{"id": "row-1"}]
+    assert mock_post.call_count == 1
+
+
+@patch("notion_client.requests.post")
+def test_query_database_passes_sorts(mock_post):
+    mock_post.return_value = _mock_response({"results": []})
+    sorts = [{"property": "Date", "direction": "descending"}]
+    nc.query_database("tok", "db-1", sorts=sorts)
+    args, kwargs = mock_post.call_args
+    assert kwargs["json"]["sorts"] == sorts
+
+
+@patch("notion_client.requests.get")
+def test_get_block_children_paginates_across_multiple_pages(mock_get):
+    page1 = _mock_response({"results": [{"id": "block-1"}], "has_more": True, "next_cursor": "cursor-a"})
+    page2 = _mock_response({"results": [{"id": "block-2"}], "has_more": False, "next_cursor": None})
+    mock_get.side_effect = [page1, page2]
+    result = nc.get_block_children("tok", "parent-1")
+    assert result == [{"id": "block-1"}, {"id": "block-2"}]
+    assert mock_get.call_count == 2
+    first_kwargs = mock_get.call_args_list[0][1]
+    assert "start_cursor" not in first_kwargs["params"]
+    second_kwargs = mock_get.call_args_list[1][1]
+    assert second_kwargs["params"]["start_cursor"] == "cursor-a"
+
+
+@patch("notion_client.requests.delete")
+def test_delete_block_sends_delete_request(mock_delete):
+    mock_delete.return_value = _mock_response({"id": "block-1", "archived": True})
+    result = nc.delete_block("tok", "block-1")
+    assert result == {"id": "block-1", "archived": True}
+    args, kwargs = mock_delete.call_args
+    assert args[0] == "https://api.notion.com/v1/blocks/block-1"
+
+
+def test_block_text_extracts_plain_text_any_block_type():
+    block = {
+        "type": "heading_2",
+        "heading_2": {"rich_text": [{"plain_text": "Hello "}, {"plain_text": "World"}]},
+    }
+    assert nc.block_text(block) == "Hello World"
+
+
+def test_block_text_falls_back_to_text_content_when_no_plain_text():
+    block = {"type": "paragraph", "paragraph": {"rich_text": [{"text": {"content": "hi"}}]}}
+    assert nc.block_text(block) == "hi"
+
+
+def test_block_text_empty_when_no_rich_text():
+    assert nc.block_text({"type": "divider", "divider": {}}) == ""
+
+
+def test_page_title_finds_title_property():
+    page = {"properties": {"Name": {"type": "title", "title": [{"plain_text": "Foo"}]}}}
+    assert nc.page_title(page) == "Foo"
+
+
+def test_page_title_empty_when_missing():
+    assert nc.page_title({"properties": {}}) == ""
+
+
+def test_prop_text_handles_select_date_number_rich_text():
+    page = {
+        "properties": {
+            "Kind": {"type": "select", "select": {"name": "action"}},
+            "LastVerified": {"type": "date", "date": {"start": "2026-09-01"}},
+            "Count": {"type": "number", "number": 5},
+            "Notes": {"type": "rich_text", "rich_text": [{"plain_text": "hi"}]},
+            "Empty": {"type": "select", "select": None},
+        }
+    }
+    assert nc.prop_text(page, "Kind") == "action"
+    assert nc.prop_text(page, "LastVerified") == "2026-09-01"
+    assert nc.prop_text(page, "Count") == "5"
+    assert nc.prop_text(page, "Notes") == "hi"
+    assert nc.prop_text(page, "Empty") == ""
+    assert nc.prop_text(page, "Missing") == ""
+
+
+def test_number_prop():
+    assert nc.number_prop(5) == {"number": 5}
+
+
+def test_paragraph_block_chunks_long_text():
+    long_text = "a" * 2500
+    block = nc.paragraph_block(long_text)
+    chunks = block["paragraph"]["rich_text"]
+    assert len(chunks) == 2
+    assert "".join(c["text"]["content"] for c in chunks) == long_text
+
+
+def test_heading2_block_chunks_long_text():
+    long_text = "b" * 2000
+    block = nc.heading2_block(long_text)
+    chunks = block["heading_2"]["rich_text"]
+    assert len(chunks) == 2
+
+
+def test_bulleted_list_item_block():
+    assert nc.bulleted_list_item_block("buy wood") == {
+        "object": "block",
+        "type": "bulleted_list_item",
+        "bulleted_list_item": {"rich_text": [{"type": "text", "text": {"content": "buy wood"}}]},
+    }

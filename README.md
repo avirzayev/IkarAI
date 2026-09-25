@@ -22,8 +22,8 @@ anywhere in the loop.
 - **The knowledge base lives in Notion**, not local files: the agent's
   persona, current strategy, a self-documenting "Action Catalog" of
   every HTTP action it has discovered and verified, a diplomacy/
-  relations tracker, and daily logs. `scripts/bootstrap_kb.py` creates
-  and seeds all of it.
+  relations tracker, daily logs, and a per-cycle token-usage log.
+  `scripts/bootstrap_kb.py` creates and seeds all of it.
 - **Notifications go through Notion too.** There's no push-notification
   channel — when the agent needs you (session expired, a destructive
   action needs approval, something urgent and unfamiliar), it creates a
@@ -93,6 +93,18 @@ The agent keeps `action_request.txt` fresh itself between refreshes
 (each response carries the next token); only the cookie needs periodic
 manual renewal.
 
+## Token usage
+
+Each cycle runs `claude -p` with a deliberately lean setup (no user
+plugins/hooks/MCP/auto-memory, only the six tools it uses, the runbook in
+the system prompt) and talks to Notion and the game only through
+`kb.py`/`game.py`, whose output is pre-summarized. After every cycle,
+`scripts/log_usage.py` adds a row to the **Token Usage** Notion database:
+turns, total tokens (input + cache read + cache write + output),
+thinking tokens, cost and duration, plus a line in `session/hourly.log`.
+Tune with `IKARAI_MODEL`, `IKARAI_EFFORT` and `IKARAI_MAX_BUDGET_USD` in
+`.env` (see `.env.example`).
+
 ## Useful commands
 
 | Command | What it does |
@@ -112,6 +124,9 @@ scripts/
   config.py           # .env loader
   notion_client.py     # thin Notion REST API wrapper
   bootstrap_kb.py       # creates + seeds the Notion knowledge base
+  kb.py                 # the agent's one-line Notion CLI (compact output)
+  game.py               # the agent's one-line game CLI (compact summaries)
+  log_usage.py          # writes each cycle's token usage to Notion
   session_store.py      # session cookie / actionRequest / next_wake file I/O
   ikariam_client.py     # the Ikariam HTTP client
   run_hourly_cycle.sh    # invokes `claude -p` against RUNBOOK.md
