@@ -32,13 +32,35 @@ def create_database(token: str, parent_page_id: str, title: str, properties_sche
     return resp.json()
 
 
-def query_database(token: str, database_id: str, filter_: dict | None = None) -> list:
-    payload = {"filter": filter_} if filter_ else {}
-    resp = requests.post(
-        f"{NOTION_API}/databases/{database_id}/query", headers=_headers(token), json=payload
-    )
-    resp.raise_for_status()
-    return resp.json()["results"]
+def query_database(
+    token: str,
+    database_id: str,
+    filter_: dict | None = None,
+    sorts: list | None = None,
+) -> list:
+    # Notion paginates at 100 rows/page. Looping over has_more/next_cursor
+    # avoids silently truncating databases that have grown past that.
+    results = []
+    start_cursor = None
+    while True:
+        payload = {"page_size": 100}
+        if filter_:
+            payload["filter"] = filter_
+        if sorts:
+            payload["sorts"] = sorts
+        if start_cursor:
+            payload["start_cursor"] = start_cursor
+        resp = requests.post(
+            f"{NOTION_API}/databases/{database_id}/query", headers=_headers(token), json=payload
+        )
+        resp.raise_for_status()
+        data = resp.json()
+        results.extend(data["results"])
+        if data.get("has_more") and data.get("next_cursor"):
+            start_cursor = data["next_cursor"]
+        else:
+            break
+    return results
 
 
 def search(token: str, query: str = "") -> list:
@@ -68,6 +90,12 @@ def update_block(token: str, block_id: str, block_payload: dict) -> dict:
     return resp.json()
 
 
+def delete_block(token: str, block_id: str) -> dict:
+    resp = requests.delete(f"{NOTION_API}/blocks/{block_id}", headers=_headers(token))
+    resp.raise_for_status()
+    return resp.json()
+
+
 def get_page(token: str, page_id: str) -> dict:
     resp = requests.get(f"{NOTION_API}/pages/{page_id}", headers=_headers(token))
     resp.raise_for_status()
@@ -75,9 +103,26 @@ def get_page(token: str, page_id: str) -> dict:
 
 
 def get_block_children(token: str, block_id: str) -> list:
-    resp = requests.get(f"{NOTION_API}/blocks/{block_id}/children", headers=_headers(token))
-    resp.raise_for_status()
-    return resp.json()["results"]
+    # Same truncation risk as query_database — page through has_more.
+    results = []
+    start_cursor = None
+    while True:
+        params = {"page_size": 100}
+        if start_cursor:
+            params["start_cursor"] = start_cursor
+        resp = requests.get(
+            f"{NOTION_API}/blocks/{block_id}/children",
+            headers=_headers(token),
+            params=params,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+        results.extend(data["results"])
+        if data.get("has_more") and data.get("next_cursor"):
+            start_cursor = data["next_cursor"]
+        else:
+            break
+    return results
 
 
 def update_page(token: str, page_id: str, properties: dict) -> dict:
@@ -100,12 +145,16 @@ def title_prop(text: str) -> dict:
     return {"title": [{"type": "text", "text": {"content": text}}]}
 
 
-def rich_text_prop(text: str) -> dict:
+def _chunk_rich_text(text: str) -> list:
     # Notion rejects any single text object over 2000 chars; chunk so
-    # accumulating Daily Log fields don't start failing once they grow past it.
+    # accumulating fields/blocks don't start failing once they grow past it.
     chunk_size = 1900
     chunks = [text[i : i + chunk_size] for i in range(0, len(text), chunk_size)] or [""]
-    return {"rich_text": [{"type": "text", "text": {"content": c}} for c in chunks]}
+    return [{"type": "text", "text": {"content": c}} for c in chunks]
+
+
+def rich_text_prop(text: str) -> dict:
+    return {"rich_text": _chunk_rich_text(text)}
 
 
 def select_prop(name: str) -> dict:
@@ -116,11 +165,15 @@ def date_prop(iso_date: str) -> dict:
     return {"date": {"start": iso_date}}
 
 
+def number_prop(n) -> dict:
+    return {"number": n}
+
+
 def paragraph_block(text: str) -> dict:
     return {
         "object": "block",
         "type": "paragraph",
-        "paragraph": {"rich_text": [{"type": "text", "text": {"content": text}}]},
+        "paragraph": {"rich_text": _chunk_rich_text(text)},
     }
 
 
@@ -128,7 +181,7 @@ def heading2_block(text: str) -> dict:
     return {
         "object": "block",
         "type": "heading_2",
-        "heading_2": {"rich_text": [{"type": "text", "text": {"content": text}}]},
+        "heading_2": {"rich_text": _chunk_rich_text(text)},
     }
 
 
@@ -136,8 +189,59 @@ def heading3_block(text: str) -> dict:
     return {
         "object": "block",
         "type": "heading_3",
-        "heading_3": {"rich_text": [{"type": "text", "text": {"content": text}}]},
+        "heading_3": {"rich_text": _chunk_rich_text(text)},
     }
+
+
+def bulleted_list_item_block(text: str) -> dict:
+    return {
+        "object": "block",
+        "type": "bulleted_list_item",
+        "bulleted_list_item": {"rich_text": _chunk_rich_text(text)},
+    }
+
+
+def block_text(block: dict) -> str:
+    """Plain text of a block's rich_text, whatever the block's type."""
+    block_type = block.get("type", "")
+    content = block.get(block_type, {})
+    rich = content.get("rich_text", [])
+    parts = []
+    for t in rich:
+        if "plain_text" in t:
+            parts.append(t["plain_text"])
+        else:
+            parts.append(t.get("text", {}).get("content", ""))
+    return "".join(parts)
+
+
+def page_title(page: dict) -> str:
+    for prop in page.get("properties", {}).values():
+        if prop.get("type") == "title":
+            return "".join(t.get("plain_text", "") for t in prop.get("title", []))
+    return ""
+
+
+def prop_text(page: dict, name: str) -> str:
+    """Plain-string rendering of a page property, whatever its type."""
+    prop = page.get("properties", {}).get(name)
+    if not prop:
+        return ""
+    ptype = prop.get("type")
+    if ptype == "title":
+        return "".join(t.get("plain_text", "") for t in prop.get("title", []))
+    if ptype == "rich_text":
+        return "".join(t.get("plain_text", "") for t in prop.get("rich_text", []))
+    if ptype == "select":
+        sel = prop.get("select")
+        return sel["name"] if sel else ""
+    if ptype == "date":
+        d = prop.get("date")
+        return d["start"] if d else ""
+    if ptype == "number":
+        n = prop.get("number")
+        return "" if n is None else str(n)
+    return ""
 
 
 def normalize_id(notion_id: str) -> str:

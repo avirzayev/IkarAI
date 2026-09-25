@@ -17,6 +17,8 @@ class Config:
     notion_strategy_page_id: str = ""
     notion_world_knowledge_page_id: str = ""
     notion_human_required_db_id: str = ""
+    notion_strategy_archive_page_id: str = ""
+    notion_token_usage_db_id: str = ""
     timezone: str = "UTC"
 
 
@@ -47,6 +49,8 @@ def load_config(env_path: Path) -> Config:
         notion_strategy_page_id=values.get("NOTION_STRATEGY_PAGE_ID", ""),
         notion_world_knowledge_page_id=values.get("NOTION_WORLD_KNOWLEDGE_PAGE_ID", ""),
         notion_human_required_db_id=values.get("NOTION_HUMAN_REQUIRED_DB_ID", ""),
+        notion_strategy_archive_page_id=values.get("NOTION_STRATEGY_ARCHIVE_PAGE_ID", ""),
+        notion_token_usage_db_id=values.get("NOTION_TOKEN_USAGE_DB_ID", ""),
         timezone=values.get("TIMEZONE", "UTC"),
     )
 

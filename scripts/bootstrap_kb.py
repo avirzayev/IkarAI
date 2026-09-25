@@ -7,6 +7,7 @@ sys.path.insert(0, str(PROJECT_ROOT / "har"))
 
 import notion_client as nc
 from config import load_config, update_env_file
+from log_usage import TOKEN_USAGE_SCHEMA
 from parse_har import bucket_entries, load_har, to_catalog_rows, world_server_entries
 
 ACTION_CATALOG_SCHEMA = {
@@ -168,9 +169,11 @@ def main() -> None:
     daily_logs_id = ensure_database(token, root, "Daily Logs", DAILY_LOGS_SCHEMA)
     diplomacy_id = ensure_database(token, root, "Diplomacy", DIPLOMACY_SCHEMA)
     human_required_id = ensure_database(token, root, "Human Required", HUMAN_REQUIRED_SCHEMA)
+    token_usage_id = ensure_database(token, root, "Token Usage", TOKEN_USAGE_SCHEMA)
     profile_id = ensure_page(token, root, "Profile & Persona", build_persona_children(config))
     strategy_id = ensure_page(token, root, "Strategy", build_strategy_children())
     world_id = ensure_page(token, root, "World Knowledge", [nc.heading2_block("Learned Mechanics")])
+    strategy_archive_id = ensure_page(token, root, "Strategy Archive")
 
     update_env_file(
         env_path,
@@ -182,6 +185,8 @@ def main() -> None:
             "NOTION_PROFILE_PAGE_ID": profile_id,
             "NOTION_STRATEGY_PAGE_ID": strategy_id,
             "NOTION_WORLD_KNOWLEDGE_PAGE_ID": world_id,
+            "NOTION_STRATEGY_ARCHIVE_PAGE_ID": strategy_archive_id,
+            "NOTION_TOKEN_USAGE_DB_ID": token_usage_id,
         },
     )
 
