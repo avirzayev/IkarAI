@@ -1,0 +1,19 @@
+{
+  "scope": "each_city",
+  "when": [
+    {"field": "resources.wine", "op": "<", "value": 600},
+    {"field": "tavern.level", "op": ">", "value": 0}
+  ],
+  "do": {
+    "primitive": "transport",
+    "resource": "wine",
+    "amount": 1500,
+    "from": "richest",
+    "to": "$city"
+  },
+  "limits": {
+    "cooldown_min": 180,
+    "max_per_day": 4,
+    "max_share_of_source": 0.3
+  }
+}

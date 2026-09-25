@@ -191,8 +191,10 @@ def _print_http_error(e: requests.HTTPError) -> None:
 # ---------------------------------------------------------------------------
 
 
-LAST_CYCLE_CHAR_CAP = 2500
-WORLD_KNOWLEDGE_HEADINGS_CAP = 40
+# Everything `context` prints is re-read on every model call of the cycle
+# (~100 calls), so each 1K chars here costs ~30K tokens per cycle.
+LAST_CYCLE_CHAR_CAP = 1500
+WORLD_KNOWLEDGE_HEADINGS_CAP = 15
 
 
 def _capped_strategy(text: str) -> str:
@@ -502,6 +504,75 @@ def cmd_strategy_set(ctx: Ctx, args) -> int:
     return 0
 
 
+def _read_text_arg(args, what: str) -> str:
+    if args.file and args.text:
+        raise KbError("pass either TEXT or --file, not both")
+    if args.file:
+        text = Path(args.file).read_text()
+    elif args.text == "-":
+        text = sys.stdin.read()
+    elif args.text:
+        text = args.text
+    else:
+        raise KbError(f"{what} requires TEXT, --file PATH, or '-' for stdin")
+    return text.strip()
+
+
+def cmd_strategy_section(ctx: Ctx, args) -> int:
+    """Replace the body of one `## HEADING` section (or add it at the end),
+    so a small plan change doesn't mean rewriting the whole page."""
+    text = _read_text_arg(args, "strategy section")
+    if not text:
+        raise KbError("section text is empty")
+    strategy_id = ctx.config.notion_strategy_page_id
+    blocks = nc.get_block_children(ctx.token, strategy_id)
+    heading = args.heading.strip().lstrip("#").strip()
+
+    start = next(
+        (
+            i
+            for i, b in enumerate(blocks)
+            if b.get("type") in ("heading_1", "heading_2")
+            and nc.block_text(b).strip().lower() == heading.lower()
+        ),
+        None,
+    )
+    if start is None:
+        body = []
+    else:
+        end = next(
+            (j for j in range(start + 1, len(blocks)) if blocks[j].get("type") in ("heading_1", "heading_2")),
+            len(blocks),
+        )
+        body = blocks[start + 1 : end]
+
+    old_body_text = _blocks_to_text(body)
+    page_len = len(_blocks_to_text(blocks))
+    new_len = page_len - len(old_body_text) + len(text) + (0 if start is not None else len(heading) + 4)
+    if new_len > STRATEGY_CHAR_CAP:
+        raise KbError(
+            f"strategy would be {new_len} chars, over the {STRATEGY_CHAR_CAP} cap — "
+            "condense this or another section (or use `strategy set`)."
+        )
+
+    new_blocks = _markdown_to_blocks(text)
+    if start is None:
+        _append_in_batches(ctx.token, strategy_id, [nc.heading2_block(heading)] + new_blocks)
+        print(f"OK strategy section added: '{heading}' (page ~{new_len} chars)")
+        return 0
+
+    if old_body_text.strip():
+        _archive_text(
+            ctx, "notion_strategy_archive_page_id", "NOTION_STRATEGY_ARCHIVE_PAGE_ID",
+            "Strategy Archive", f"section: {nc.block_text(blocks[start])}", old_body_text,
+        )
+    for b in body:
+        nc.delete_block(ctx.token, b["id"])
+    nc.append_blocks(ctx.token, strategy_id, new_blocks, after=blocks[start]["id"])
+    print(f"OK strategy section replaced: '{nc.block_text(blocks[start])}' (page ~{new_len} chars)")
+    return 0
+
+
 # ---------------------------------------------------------------------------
 # knowledge
 # ---------------------------------------------------------------------------
@@ -774,6 +845,11 @@ def _build_parser() -> argparse.ArgumentParser:
     p_strat_set.add_argument("text", nargs="?")
     p_strat_set.add_argument("--file")
     p_strat_set.set_defaults(func=cmd_strategy_set)
+    p_strat_sec = strategy_sub.add_parser("section")
+    p_strat_sec.add_argument("heading")
+    p_strat_sec.add_argument("text", nargs="?")
+    p_strat_sec.add_argument("--file")
+    p_strat_sec.set_defaults(func=cmd_strategy_section)
 
     p_knowledge = sub.add_parser("knowledge")
     knowledge_sub = p_knowledge.add_subparsers(dest="cmd", required=True)

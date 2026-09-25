@@ -763,3 +763,53 @@ def test_catalog_notes_replace_archives_old_notes_first(
     assert archived == old
     mock_ensure.assert_called_once()
     assert mock_update.call_args.args[2]["Notes"]["rich_text"][0]["text"]["content"] == "Condensed."
+
+
+def _strategy_blocks():
+    return [
+        _block("h1", "heading_2", "Goals"),
+        _block("p1", "paragraph", "Grow wood."),
+        _block("h2", "heading_2", "Next"),
+        _block("p2", "paragraph", "Build a shipyard."),
+        _block("p3", "paragraph", "Buy ships."),
+    ]
+
+
+@patch("kb.update_env_file")
+@patch("kb.bk.ensure_page", return_value="archive-1")
+@patch("kb.nc.append_blocks")
+@patch("kb.nc.delete_block")
+@patch("kb.nc.get_block_children")
+def test_strategy_section_replaces_only_that_section(mock_children, mock_delete, mock_append, mock_ensure, mock_env, tmp_path):
+    _write_env(tmp_path)
+    mock_children.return_value = _strategy_blocks()
+    assert kb.main(["strategy", "section", "Next", "Colonize the sulfur island."], project_root=tmp_path) == 0
+    assert [c.args[1] for c in mock_delete.call_args_list] == ["p2", "p3"]
+    strategy_call = [c for c in mock_append.call_args_list if c.kwargs.get("after") == "h2"]
+    assert len(strategy_call) == 1
+    assert strategy_call[0].args[2][0]["paragraph"]["rich_text"][0]["text"]["content"] == "Colonize the sulfur island."
+    archived = [c for c in mock_append.call_args_list if c.args[1] == "archive-page"]
+    assert archived and "Build a shipyard." in archived[0].args[2][1]["paragraph"]["rich_text"][0]["text"]["content"]
+
+
+@patch("kb.nc.append_blocks")
+@patch("kb.nc.delete_block")
+@patch("kb.nc.get_block_children")
+def test_strategy_section_adds_missing_heading_at_end(mock_children, mock_delete, mock_append, tmp_path):
+    _write_env(tmp_path)
+    mock_children.return_value = _strategy_blocks()
+    assert kb.main(["strategy", "section", "## Risks", "Pirates."], project_root=tmp_path) == 0
+    mock_delete.assert_not_called()
+    blocks = mock_append.call_args.args[2]
+    assert blocks[0]["type"] == "heading_2" and blocks[0]["heading_2"]["rich_text"][0]["text"]["content"] == "Risks"
+
+
+@patch("kb.nc.append_blocks")
+@patch("kb.nc.delete_block")
+@patch("kb.nc.get_block_children")
+def test_strategy_section_rejects_when_page_would_exceed_cap(mock_children, mock_delete, mock_append, tmp_path):
+    _write_env(tmp_path)
+    mock_children.return_value = _strategy_blocks()
+    assert kb.main(["strategy", "section", "Next", "z" * 3600], project_root=tmp_path) != 0
+    mock_delete.assert_not_called()
+    mock_append.assert_not_called()

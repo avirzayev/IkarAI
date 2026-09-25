@@ -1,0 +1,17 @@
+{
+  "scope": "each_city",
+  "when": [
+    {"field": "wine_per_hour", "op": "==", "value": 0},
+    {"field": "resources.wine", "op": ">=", "value": 1000},
+    {"field": "tavern.level", "op": ">", "value": 0}
+  ],
+  "do": {
+    "primitive": "set_tavern_wine",
+    "city": "$city",
+    "level": "max_affordable"
+  },
+  "limits": {
+    "cooldown_min": 120,
+    "max_per_day": 6
+  }
+}
