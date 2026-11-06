@@ -318,3 +318,148 @@ def test_missing_config_fails_open_exit_10(tmp_path):
     rc = pretick.run(tmp_path, now=NOW)
     assert rc == 10
     assert "heavy: pretick error" in (tmp_path / "session" / "wake_reasons.txt").read_text()
+
+
+# ---------------------------------------------------------------------------
+# rethink wiring
+# ---------------------------------------------------------------------------
+
+
+def _quiet_session(tmp_path):
+    stamp = NOW.strftime("%Y-%m-%dT%H:%M:%SZ")
+    (tmp_path / "session" / "last_llm_cycle.txt").write_text(stamp)
+    (tmp_path / "session" / "last_review.txt").write_text(stamp)
+
+
+def _run_with_mocks(tmp_path, state=None, kb_main=None):
+    with patch("pretick.subprocess.run", return_value=_ok_subprocess(state or _state())), \
+         patch("pretick.chores.main", return_value=0), \
+         patch("pretick.nc.query_database", return_value=[]), \
+         patch("pretick.kb.main", kb_main or MagicMock(return_value=0)):
+        return pretick.run(tmp_path, now=NOW)
+
+
+def test_every_tick_appends_a_metrics_line(tmp_path, monkeypatch):
+    monkeypatch.delenv("IKARAI_RETHINK_MODE", raising=False)
+    _write_env(tmp_path)
+    _quiet_session(tmp_path)
+    assert _run_with_mocks(tmp_path) == 0
+    lines = (tmp_path / "session" / "metrics.jsonl").read_text().splitlines()
+    assert len(lines) == 1
+    assert json.loads(lines[0])["time"] == "2026-09-25T12:00:00Z"
+
+
+def test_log_mode_only_shadows_and_stays_out_of_wake_reasons(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("IKARAI_RETHINK_MODE", "log")
+    _write_env(tmp_path)
+    _quiet_session(tmp_path)
+    assert _run_with_mocks(tmp_path) == 0
+    assert "rethink:" not in (tmp_path / "session" / "wake_reasons.txt").read_text()
+    assert "[rethink-shadow] daily review due" in capsys.readouterr().out
+
+
+def test_log_mode_consumes_a_request_so_it_does_not_repeat(tmp_path, monkeypatch):
+    monkeypatch.setenv("IKARAI_RETHINK_MODE", "log")
+    _write_env(tmp_path)
+    _quiet_session(tmp_path)
+    (tmp_path / "session" / "rethink_request.txt").write_text("why")
+    _run_with_mocks(tmp_path)
+    assert not (tmp_path / "session" / "rethink_request.txt").exists()
+
+
+def test_off_mode_skips_triggers_but_keeps_the_scoreboard(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("IKARAI_RETHINK_MODE", "off")
+    _write_env(tmp_path)
+    _quiet_session(tmp_path)
+    assert _run_with_mocks(tmp_path) == 0
+    assert "rethink" not in capsys.readouterr().out
+    assert (tmp_path / "session" / "metrics.jsonl").exists()
+
+
+def test_live_mode_wakes_with_rethink_reason(tmp_path, monkeypatch):
+    monkeypatch.setenv("IKARAI_RETHINK_MODE", "live")
+    _write_env(tmp_path)
+    _quiet_session(tmp_path)
+    assert _run_with_mocks(tmp_path) == 10
+    assert "rethink: daily review due" in (tmp_path / "session" / "wake_reasons.txt").read_text()
+
+
+def test_live_mode_consumes_request_when_it_fires(tmp_path, monkeypatch):
+    monkeypatch.setenv("IKARAI_RETHINK_MODE", "live")
+    _write_env(tmp_path)
+    _quiet_session(tmp_path)
+    (tmp_path / "session" / "rethink_request.txt").write_text("why")
+    _run_with_mocks(tmp_path)
+    assert "rethink: requested: why" in (tmp_path / "session" / "wake_reasons.txt").read_text()
+    assert not (tmp_path / "session" / "rethink_request.txt").exists()
+
+
+def test_safeguard_suppresses_and_keeps_request(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("IKARAI_RETHINK_MODE", "live")
+    _write_env(tmp_path)
+    _quiet_session(tmp_path)
+    (tmp_path / "session" / "rethink_request.txt").write_text("why")
+    recent = (NOW - timedelta(hours=1)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    (tmp_path / "session" / "rethink_runs.jsonl").write_text(json.dumps({"time": recent, "ok": True}) + "\n")
+    assert _run_with_mocks(tmp_path) == 0
+    assert "[rethink] suppressed" in capsys.readouterr().out
+    assert (tmp_path / "session" / "rethink_request.txt").exists()
+
+
+def test_attack_still_wakes_while_rethink_is_suppressed(tmp_path, monkeypatch):
+    monkeypatch.setenv("IKARAI_RETHINK_MODE", "live")
+    _write_env(tmp_path)
+    _quiet_session(tmp_path)
+    recent = (NOW - timedelta(hours=1)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    (tmp_path / "session" / "rethink_runs.jsonl").write_text(json.dumps({"time": recent, "ok": True}) + "\n")
+    state = _state(alerts={"under_attack": True, "unread_messages": 0})
+    assert _run_with_mocks(tmp_path, state=state) == 10
+    reasons = (tmp_path / "session" / "wake_reasons.txt").read_text()
+    assert "heavy: under attack" in reasons
+    assert "rethink:" not in reasons
+
+
+def test_metrics_failure_does_not_block_the_tick(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("IKARAI_RETHINK_MODE", "live")
+    _write_env(tmp_path)
+    _quiet_session(tmp_path)
+    with patch("pretick.metrics.build_line", side_effect=RuntimeError("boom")):
+        assert _run_with_mocks(tmp_path) == 0
+    assert "[rethink] error: boom" in capsys.readouterr().out
+
+
+def test_alert_files_human_row_after_three_failures(tmp_path, monkeypatch):
+    monkeypatch.setenv("IKARAI_RETHINK_MODE", "off")
+    _write_env(tmp_path)
+    _quiet_session(tmp_path)
+    (tmp_path / "session" / "model_failures.txt").write_text("3")
+    (tmp_path / "session" / "last_run.json").write_text(json.dumps({"result": "OAuth expired"}))
+    kb_main = MagicMock(return_value=0)
+    _run_with_mocks(tmp_path, kb_main=kb_main)
+    human_calls = [c for c in kb_main.call_args_list if c.args[0][:2] == ["human", "create"]]
+    assert len(human_calls) == 1
+    assert human_calls[0].args[0][2] == "Model cycles failing — check Claude login"
+    assert "OAuth expired" in human_calls[0].args[0][3]
+
+
+def test_no_alert_below_three_failures(tmp_path, monkeypatch):
+    monkeypatch.setenv("IKARAI_RETHINK_MODE", "off")
+    _write_env(tmp_path)
+    _quiet_session(tmp_path)
+    (tmp_path / "session" / "model_failures.txt").write_text("2")
+    kb_main = MagicMock(return_value=0)
+    _run_with_mocks(tmp_path, kb_main=kb_main)
+    assert not [c for c in kb_main.call_args_list if c.args[0][:2] == ["human", "create"]]
+
+
+def test_alert_failure_does_not_block_the_tick(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("IKARAI_RETHINK_MODE", "off")
+    _write_env(tmp_path)
+    _quiet_session(tmp_path)
+    (tmp_path / "session" / "model_failures.txt").write_text("5")
+    def kb_main(args, **kwargs):
+        if args[:2] == ["human", "create"]:
+            raise RuntimeError("notion down")
+        return 0
+    assert _run_with_mocks(tmp_path, kb_main=kb_main) == 0
+    assert "[alert] could not file" in capsys.readouterr().out

@@ -34,6 +34,8 @@ sys.path.insert(0, str(PROJECT_ROOT / "scripts"))
 import chores  # noqa: E402
 import kb  # noqa: E402
 import notion_client as nc  # noqa: E402
+import metrics  # noqa: E402
+import rethink  # noqa: E402
 from config import load_config  # noqa: E402
 
 MIN_WAKE_MINUTES = 10
@@ -41,6 +43,9 @@ MAX_WAKE_MINUTES = 180
 WAKE_LEAD_MINUTES = 2
 LLM_CYCLE_STALE_HOURS = 6
 REVIEW_STALE_HOURS = 24
+RETHINK_HISTORY_DAYS = 8
+ALERT_AFTER_FAILURES = 3
+ALERT_TITLE = "Model cycles failing — check Claude login"
 
 
 # ---------------------------------------------------------------------------
@@ -154,6 +159,52 @@ def _staleness_reasons(session_dir: Path, now_utc: datetime) -> list:
 
 
 # ---------------------------------------------------------------------------
+# rethink triggers and failure alert (never block the tick)
+# ---------------------------------------------------------------------------
+
+
+def _rethink_reasons(session_dir: Path, state: dict, base_reasons: list, now_utc: datetime) -> list:
+    try:
+        metrics.append_line(session_dir, metrics.build_line(state, base_reasons, now_utc), now_utc)
+        mode = rethink.mode()
+        if mode == "off":
+            return []
+        lines = metrics.load_lines(session_dir, since=now_utc - timedelta(days=RETHINK_HISTORY_DAYS))
+        fired = rethink.evaluate(lines, session_dir, now_utc)
+        if not fired:
+            return []
+        if mode == "log":
+            for reason in fired:
+                print(f"[rethink-shadow] {reason}")
+            rethink.consume_request(session_dir)
+            return []
+        allowed, why = rethink.gate(session_dir, now_utc)
+        if not allowed:
+            print(f"[rethink] suppressed ({why}): {'; '.join(fired)}")
+            return []
+        rethink.consume_request(session_dir)
+        return [f"rethink: {reason}" for reason in fired]
+    except Exception as exc:  # fail open — the normal cycle must still run
+        print(f"[rethink] error: {exc}")
+        return []
+
+
+def _file_failure_alert(session_dir: Path, project_root: Path, now_utc: datetime) -> None:
+    try:
+        failures = rethink.consecutive_failures(session_dir)
+        if failures < ALERT_AFTER_FAILURES:
+            return
+        question = (
+            f"{failures} model cycles in a row have failed. Last error: "
+            f"{rethink.last_error(session_dir)}. Check the Claude login on the server."
+        )
+        # `human create` skips the row if one with this title is already open.
+        kb.main(["human", "create", ALERT_TITLE, question], project_root=project_root, now=now_utc)
+    except Exception as exc:
+        print(f"[alert] could not file failure alert: {exc}")
+
+
+# ---------------------------------------------------------------------------
 # step 4 — next_wake
 # ---------------------------------------------------------------------------
 
@@ -221,6 +272,8 @@ def run(project_root: Path, now: datetime | None = None) -> int:
         reasons.extend(_chores_result_reasons(chores_result))
         reasons.extend(_construction_reasons(state))
         reasons.extend(_staleness_reasons(session_dir, now_utc))
+        _file_failure_alert(session_dir, project_root, now_utc)
+        reasons.extend(_rethink_reasons(session_dir, state, reasons, now_utc))
 
         if reasons:
             _write_reasons(session_dir, reasons)
