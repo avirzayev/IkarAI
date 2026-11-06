@@ -450,12 +450,52 @@ def cmd_catalog_upsert(ctx: Ctx, args) -> int:
 STRATEGY_CHAR_CAP = 3500
 
 
+DECISIONS_HEADING = "decisions"
+
+
+def _refuse_in_proposal_mode(what: str) -> None:
+    if os.environ.get("IKARAI_STRATEGY_READ_ONLY") == "1":
+        raise KbError(f"{what} is refused in proposal mode: write session/rethink_proposal.md instead")
+
+
+def validate_decisions(text: str) -> None:
+    """Every DECISIONS line needs a reason and a re-check condition, so a rule
+    can never go stale without something saying when to look at it again."""
+    for line in text.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        lowered = line.lower()
+        missing = [word for word in ("because", "recheck") if word not in lowered]
+        if missing:
+            raise KbError(
+                f"DECISIONS line is missing '{missing[0]}': {line!r}. Format: "
+                "'no warehouses - because stock is far below cap - recheck if any city reaches 90%'"
+            )
+
+
+def _decisions_body(page_text: str) -> str | None:
+    match = re.search(
+        rf"^#+\s*{DECISIONS_HEADING}\s*$(.*?)(?=^#+\s|\Z)",
+        page_text,
+        flags=re.IGNORECASE | re.MULTILINE | re.DOTALL,
+    )
+    return match.group(1) if match else None
+
+
+def cmd_rethink(ctx: Ctx, args) -> int:
+    (ctx.session_dir / "rethink_request.txt").write_text(args.reason.strip() + "\n")
+    print("OK rethink requested")
+    return 0
+
+
 def cmd_strategy_show(ctx: Ctx, args) -> int:
     print(_page_full_text(ctx.token, ctx.config.notion_strategy_page_id))
     return 0
 
 
 def cmd_strategy_set(ctx: Ctx, args) -> int:
+    _refuse_in_proposal_mode("strategy set")
     if args.file and args.text:
         raise KbError("pass either TEXT or --file, not both")
     if args.file:
@@ -475,9 +515,12 @@ def cmd_strategy_set(ctx: Ctx, args) -> int:
             f"strategy text is {len(text)} chars, over the {STRATEGY_CHAR_CAP} cap — "
             "condense it and move detail to World Knowledge."
         )
+    body = _decisions_body(text)
+    if body is not None:
+        validate_decisions(body)
 
     strategy_id = ctx.config.notion_strategy_page_id
-    old_blocks = nc.get_block_children(ctx.token, strategy_id)
+    old_blocks =nc.get_block_children(ctx.token, strategy_id)
     old_text = _blocks_to_text(old_blocks)
 
     archive_id = ctx.config.notion_strategy_archive_page_id
@@ -521,12 +564,15 @@ def _read_text_arg(args, what: str) -> str:
 def cmd_strategy_section(ctx: Ctx, args) -> int:
     """Replace the body of one `## HEADING` section (or add it at the end),
     so a small plan change doesn't mean rewriting the whole page."""
+    _refuse_in_proposal_mode("strategy section")
     text = _read_text_arg(args, "strategy section")
     if not text:
         raise KbError("section text is empty")
+    heading = args.heading.strip().lstrip("#").strip()
+    if heading.lower() == DECISIONS_HEADING:
+        validate_decisions(text)
     strategy_id = ctx.config.notion_strategy_page_id
     blocks = nc.get_block_children(ctx.token, strategy_id)
-    heading = args.heading.strip().lstrip("#").strip()
 
     start = next(
         (
@@ -655,6 +701,7 @@ def cmd_log_last(ctx: Ctx, args) -> int:
 
 
 def cmd_log_add(ctx: Ctx, args) -> int:
+    _refuse_in_proposal_mode("log add")
     text = sys.stdin.read() if args.text == "-" else args.text
     text = text.strip()
     if not text:
@@ -872,6 +919,10 @@ def _build_parser() -> argparse.ArgumentParser:
     p_wake = sub.add_parser("wake")
     p_wake.add_argument("value", help="ISO UTC timestamp (2026-09-25T14:30:00Z) or +MINUTES")
     p_wake.set_defaults(func=cmd_wake)
+
+    p_rethink = sub.add_parser("rethink", help="ask for a strategist review of the plan")
+    p_rethink.add_argument("reason")
+    p_rethink.set_defaults(func=cmd_rethink)
 
     p_human = sub.add_parser("human")
     human_sub = p_human.add_subparsers(dest="cmd", required=True)
