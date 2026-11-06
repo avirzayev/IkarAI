@@ -119,6 +119,18 @@ thinking tokens, cost and duration, plus a line in `session/hourly.log`.
 Tune with `IKARAI_MODEL`, `IKARAI_EFFORT` and `IKARAI_MAX_BUDGET_USD` in
 `.env` (see `.env.example`).
 
+### Strategist
+
+Normal cycles carry out the plan. A separate strategist run (`RETHINK.md`, game
+read-only) decides what the plan should be. Each pre-tick records a scoreboard line
+in `session/metrics.jsonl` and checks rethink triggers: daily, stagnant, stuck,
+stranded stock, wasted cap, empty city, return from outage, or a `kb.py rethink`
+request. Rethinks are limited to one per 6 hours and 3 per 24 hours.
+`IKARAI_RETHINK_MODE` controls it: `off`, `log` (default; triggers are only logged),
+`propose` (writes `session/rethink_proposal.md`) or `live`. Pivots are recorded in
+`session/pivots.jsonl`. After 3 failed model cycles in a row, the pre-tick files a
+Human Required row.
+
 ## Useful commands
 
 | Command | What it does |

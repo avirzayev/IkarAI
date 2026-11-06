@@ -813,3 +813,54 @@ def test_strategy_section_rejects_when_page_would_exceed_cap(mock_children, mock
     assert kb.main(["strategy", "section", "Next", "z" * 3600], project_root=tmp_path) != 0
     mock_delete.assert_not_called()
     mock_append.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# rethink support
+# ---------------------------------------------------------------------------
+
+
+def test_rethink_writes_request_file(tmp_path):
+    _write_env(tmp_path)
+    assert kb.main(["rethink", "plan looks wrong"], project_root=tmp_path) == 0
+    assert (tmp_path / "session" / "rethink_request.txt").read_text().strip() == "plan looks wrong"
+
+
+def test_strategy_set_refuses_decision_without_recheck(tmp_path, capsys):
+    _write_env(tmp_path)
+    text = "## DECISIONS\nno warehouses - because stock is far below cap"
+    assert kb.main(["strategy", "set", text], project_root=tmp_path) != 0
+    assert "missing 'recheck'" in capsys.readouterr().err
+
+
+def test_strategy_set_refuses_decision_without_reason(tmp_path, capsys):
+    _write_env(tmp_path)
+    text = "## DECISIONS\nno warehouses - recheck if any city reaches 90%"
+    assert kb.main(["strategy", "set", text], project_root=tmp_path) != 0
+    assert "missing 'because'" in capsys.readouterr().err
+
+
+def test_strategy_set_accepts_valid_decisions_and_ignores_other_sections(tmp_path):
+    _write_env(tmp_path)
+    text = (
+        "## PLAN\nbuy ships\n"
+        "## DECISIONS\nno warehouses - because stock is far below cap - recheck if any city reaches 90%\n"
+        "## LOGISTICS\nFleet 12 ships"
+    )
+    with patch("kb.nc.get_block_children", return_value=[]), patch("kb.nc.append_blocks"):
+        assert kb.main(["strategy", "set", text], project_root=tmp_path) == 0
+
+
+def test_strategy_section_validates_decisions_heading(tmp_path, capsys):
+    _write_env(tmp_path)
+    assert kb.main(["strategy", "section", "Decisions", "no ships"], project_root=tmp_path) != 0
+    assert "missing 'because'" in capsys.readouterr().err
+
+
+def test_strategy_writes_and_log_refused_in_proposal_mode(tmp_path, monkeypatch, capsys):
+    _write_env(tmp_path)
+    monkeypatch.setenv("IKARAI_STRATEGY_READ_ONLY", "1")
+    assert kb.main(["strategy", "set", "x"], project_root=tmp_path) != 0
+    assert kb.main(["strategy", "section", "Next", "x"], project_root=tmp_path) != 0
+    assert kb.main(["log", "add", "x"], project_root=tmp_path) != 0
+    assert "proposal mode" in capsys.readouterr().err

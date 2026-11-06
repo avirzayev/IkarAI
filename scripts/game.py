@@ -46,6 +46,7 @@ more detail than the summary gives.
 
 import html
 import json
+import os
 import re
 import shlex
 import sys
@@ -835,7 +836,18 @@ def _save_response(session_dir: Path, label: str, response) -> Path:
 # --------------------------------------------------------------------------
 
 
+def _refuse_if_read_only(what: str) -> bool:
+    """The strategist plans but doesn't act. This guards against mistakes; it
+    isn't a security boundary, because the strategist also has Bash."""
+    if os.environ.get("IKARAI_READ_ONLY") == "1":
+        print(f"READ_ONLY: {what} refused; the strategist plans and the normal cycle acts")
+        return True
+    return False
+
+
 def _cmd_set_cookie(rest: list, session_dir: Path, env_path: Path) -> int:
+    if _refuse_if_read_only("set-cookie"):
+        return 2
     remaining, _ = _split_flags(rest)
     cookie = None
     i = 0
@@ -961,6 +973,8 @@ def _cmd_nav(rest: list, session_dir: Path, env_path: Path) -> int:
 
 
 def _cmd_action(rest: list, session_dir: Path, env_path: Path) -> int:
+    if _refuse_if_read_only("action"):
+        return 2
     remaining, options = _split_flags(rest)
     try:
         action, function, kv = parse_action_args(remaining)

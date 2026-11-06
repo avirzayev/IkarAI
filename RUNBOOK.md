@@ -26,6 +26,21 @@ the CLIs below are your whole interface.
   wiki API or `WebSearch`, and save useful findings with
   `kb.py knowledge add` marked "(external research)".
 
+## Plan and goals
+
+A separate strategist reviews the plan and writes it to the Strategy page. If the
+Strategy has `GOALS`, `MAIN LIMIT` and `PLAN` sections, follow them. Choose builds by payoff toward the
+goals, not by what happens to be affordable.
+
+Don't reverse a `DECISIONS` line unless its re-check condition is met. If the plan
+looks wrong, or the numbers contradict it, run `kb.py rethink "reason"` and carry
+on with what you can. The next strategist run picks it up.
+
+**Attacks.** You may attack anyone on your own judgment. Record the target, expected
+gain and retaliation risk in the Daily Log. The rule against unverified actions
+still applies: only `attackBarbarianVillage` is catalogued, so attacks on players
+require first discovering and recording the real request.
+
 ## This is a one-shot run
 
 You cannot be woken mid-cycle: the process ends when you stop making
@@ -84,6 +99,7 @@ Knowledge base (`python3 scripts/kb.py ...`):
 - `wake <ISO-UTC | +MINUTES>` — sets next_wake and the Daily Log header.
 - `human list|create TITLE QUESTION|resolve PAGE_ID`
 - `diplomacy list|upsert NAME [--type --relationship --history-append]`
+- `rethink "reason"` — ask the strategist to review the plan
 
 Chores (`python3 scripts/chores.py ...`): `list`, `show NAME`,
 `add NAME --why TEXT --rule JSON`, `promote NAME`, `disable NAME`.
@@ -142,6 +158,8 @@ without you, every tick. The rule format, primitives (`transport`,
 
 5. **Strategy.** Only if the plan changed: `kb.py strategy section` for
    the part that changed. The page is the *current* plan, not a changelog.
+   Each `DECISIONS` line needs a reason and a re-check condition:
+   `no warehouses - because stock is far below cap - recheck if any city reaches 90%`.
 
 6. **Log.** `kb.py log add` — one entry, in character: what changed,
    decisions and why, what's next. A few short paragraphs. (Chore
