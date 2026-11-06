@@ -58,9 +58,10 @@ hide a collapse in one area behind a gain in another.
 | Wake | the reasons computed for this tick |
 
 - Economy, logistics and expansion come from data `state.json` already has.
-- Military comes from a read-only `view:militaryAdvisor` read, at most once per 6
-  hours to limit game traffic. Field extraction is to be confirmed during
-  implementation by inspecting a real response; until then it stays `null`.
+- Military stays `null` for now, with no extra game traffic. The saved
+  `view:militaryAdvisor` response (checked 2026-11-06) only lists movements and
+  occupied towns, not army strength. Finding a source is on the strategist's
+  research list.
 - Ranking stays `null` until a view is discovered: the action catalog has none.
 - `metrics.py summary` prints 7-day trends compactly for the strategist. Missing
   fields are shown as "unavailable", never as zero.

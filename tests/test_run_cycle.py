@@ -156,3 +156,15 @@ def test_repo_rethink_instructions_keep_the_hard_rules():
     text = (REPO / "RETHINK.md").read_text()
     for phrase in ("real-money", "captcha", "kb.py knowledge add", "rethink_proposal.md", "scripts/rethink.py pivot"):
         assert phrase in text
+
+
+def test_runbook_covers_strategy_format_rethink_and_attack_policy():
+    text = (REPO / "RUNBOOK.md").read_text()
+    for phrase in ("MAIN LIMIT", "kb.py rethink", "DECISIONS", "retaliation risk", "attackBarbarianVillage"):
+        assert phrase in text
+
+
+def test_env_example_documents_rethink_settings():
+    text = (REPO / ".env.example").read_text()
+    for name in ("IKARAI_RETHINK_MODE", "IKARAI_RETHINK_MODEL", "IKARAI_RETHINK_EFFORT", "IKARAI_RETHINK_MAX_BUDGET_USD"):
+        assert name in text
