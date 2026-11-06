@@ -67,13 +67,21 @@ if [ "${IKARAI_SKIP_PRETICK:-0}" != "1" ]; then
   REASONS="$(cat session/wake_reasons.txt 2>/dev/null || echo "heavy: pretick exited $PRETICK")"
 fi
 
+# `rethink:` reasons are for the strategist; the normal cycle gets the rest.
+RETHINK_MODE="$(tr '[:upper:]' '[:lower:]' <<< "${IKARAI_RETHINK_MODE:-log}")"
+RETHINK_REASONS="$(grep '^rethink:' <<< "$REASONS" || true)"
+NORMAL_REASONS="$(grep -v '^rethink:' <<< "$REASONS" || true)"
+if [ -z "$NORMAL_REASONS" ]; then
+  NORMAL_REASONS="heavy: routine check after strategist run"
+fi
+
 # Only-light reasons (chore review/promotion, periodic check-in) may run on
 # a cheaper model/effort if configured.
-if ! grep -qv '^light:' <<< "$REASONS"; then
+if ! grep -qv '^light:' <<< "$NORMAL_REASONS"; then
   MODEL="${IKARAI_LIGHT_MODEL:-$MODEL}"
   EFFORT="${IKARAI_LIGHT_EFFORT:-$EFFORT}"
 fi
-echo "[wake] model=$MODEL effort=$EFFORT reasons: $(tr '\n' ';' <<< "$REASONS")" >> session/hourly.log
+echo "[wake] model=$MODEL effort=$EFFORT reasons: $(tr '\n' ';' <<< "$NORMAL_REASONS")" >> session/hourly.log
 
 # Token diet:
 # - --setting-sources project,local: skip ~/.claude user settings, so the
@@ -86,20 +94,51 @@ echo "[wake] model=$MODEL effort=$EFFORT reasons: $(tr '\n' ';' <<< "$REASONS")"
 # - --tools: only the tool definitions this agent actually uses.
 # - RUNBOOK.md goes in the system prompt (cached) instead of being Read.
 # Output is JSON so log_usage.py can record per-cycle token usage in Notion.
+# These flags live in LEAN_ARGS, shared by the normal cycle and the strategist.
+LEAN_ARGS=(
+  --output-format json
+  --setting-sources project,local
+  --settings '{"autoMemoryEnabled": false}'
+  --strict-mcp-config
+  --no-chrome
+  --disable-slash-commands
+  --tools "Bash,Read,Write,Edit,WebSearch,WebFetch"
+  --allowedTools "Bash,Read,Write,Edit,WebSearch,WebFetch"
+)
+
+# Strategist: plans only (game read-only), then the normal cycle carries it
+# out. Its failure leaves the Strategy unchanged and never blocks the cycle.
+if [ -n "$RETHINK_REASONS" ] && { [ "$RETHINK_MODE" = "propose" ] || [ "$RETHINK_MODE" = "live" ]; }; then
+  RETHINK_MODEL="${IKARAI_RETHINK_MODEL:-claude-opus-5-5}"
+  RETHINK_EFFORT="${IKARAI_RETHINK_EFFORT:-high}"
+  RETHINK_BUDGET="${IKARAI_RETHINK_MAX_BUDGET_USD:-5}"
+  STRATEGY_READ_ONLY=0
+  if [ "$RETHINK_MODE" = "propose" ]; then
+    STRATEGY_READ_ONLY=1
+  fi
+  echo "[rethink] mode=$RETHINK_MODE model=$RETHINK_MODEL reasons: $(tr '\n' ';' <<< "$RETHINK_REASONS")" >> session/hourly.log
+  set +e
+  IKARAI_READ_ONLY=1 IKARAI_STRATEGY_READ_ONLY="$STRATEGY_READ_ONLY" timeout 1800 "$CLAUDE_BIN" -p "Run one strategist review now, following the instructions in your system prompt (mode: $RETHINK_MODE). It was triggered by:
+$RETHINK_REASONS" \
+    --model "$RETHINK_MODEL" \
+    --effort "$RETHINK_EFFORT" \
+    "${LEAN_ARGS[@]}" \
+    --append-system-prompt "$(cat "$PROJECT_ROOT/RETHINK.md")" \
+    --max-budget-usd "$RETHINK_BUDGET" \
+    < /dev/null > session/last_rethink_run.json 2>> session/hourly.log
+  RETHINK_STATUS=$?
+  set -e
+  python3 scripts/rethink.py record-rethink session/last_rethink_run.json --exit-code "$RETHINK_STATUS" >> session/hourly.log 2>&1 || true
+  python3 scripts/log_usage.py session/last_rethink_run.json --exit-code "$RETHINK_STATUS" >> session/hourly.log 2>&1 || true
+fi
+
 WAKE_BEFORE="$(stat -c %Y session/next_wake.txt 2>/dev/null || echo none)"
 set +e
 "$CLAUDE_BIN" -p "Run one IkarAI cycle now, following the runbook in your system prompt. The pre-tick check woke you for:
-$REASONS" \
+$NORMAL_REASONS" \
   --model "$MODEL" \
   --effort "$EFFORT" \
-  --output-format json \
-  --setting-sources project,local \
-  --settings '{"autoMemoryEnabled": false}' \
-  --strict-mcp-config \
-  --no-chrome \
-  --disable-slash-commands \
-  --tools "Bash,Read,Write,Edit,WebSearch,WebFetch" \
-  --allowedTools "Bash,Read,Write,Edit,WebSearch,WebFetch" \
+  "${LEAN_ARGS[@]}" \
   --append-system-prompt "$(cat "$PROJECT_ROOT/RUNBOOK.md")" \
   "${BUDGET_ARGS[@]}" \
   < /dev/null > session/last_run.json 2>> session/hourly.log
@@ -107,7 +146,7 @@ STATUS=$?
 set -e
 
 date -u +%Y-%m-%dT%H:%M:%SZ > session/last_llm_cycle.txt
-if grep -qi 'review' <<< "$REASONS"; then
+if grep -qi 'review' <<< "$NORMAL_REASONS"; then
   date -u +%Y-%m-%dT%H:%M:%SZ > session/last_review.txt
 fi
 
@@ -120,5 +159,6 @@ if [ "$(stat -c %Y session/next_wake.txt 2>/dev/null || echo none)" = "$WAKE_BEF
   python3 scripts/kb.py log add "⚠️ This cycle ended before finishing (no log entry or wake time was written). Retrying in 30 minutes — check session/hourly.log." >> session/hourly.log 2>&1 || true
 fi
 
+python3 scripts/rethink.py record-cycle session/last_run.json --exit-code "$STATUS" >> session/hourly.log 2>&1 || true
 python3 scripts/log_usage.py session/last_run.json --exit-code "$STATUS" >> session/hourly.log 2>&1 || true
 exit "$STATUS"
