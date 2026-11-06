@@ -156,6 +156,40 @@ def _last_cycle_entry(token: str, daily_logs_db_id: str) -> str | None:
     return "\n".join(lines)
 
 
+RECENT_ENTRY_CHAR_CAP = 800
+
+
+def _recent_entries(token: str, daily_logs_db_id: str, count: int) -> list:
+    """The newest `count` cycle entries across the latest Daily Log pages, newest first."""
+    if not daily_logs_db_id or count < 1:
+        return []
+    rows = nc.query_database(
+        token, daily_logs_db_id, sorts=[{"property": "Date", "direction": "descending"}]
+    )
+    entries = []
+    for page in rows:
+        if len(entries) >= count:
+            break
+        title = nc.page_title(page)
+        blocks = nc.get_block_children(token, page["id"])
+        page_entries = []
+        for b in blocks[1:]:  # blocks[0] is the next-run header
+            if b.get("type") == "heading_3":
+                page_entries.append([f"{title} {nc.block_text(b)}"])
+            elif page_entries:
+                text = nc.block_text(b)
+                if text:
+                    page_entries[-1].append(text)
+        for lines in page_entries:  # a day's entries sit newest first
+            text = "\n".join(lines)
+            if len(text) > RECENT_ENTRY_CHAR_CAP:
+                text = text[:RECENT_ENTRY_CHAR_CAP] + " … (truncated)"
+            entries.append(text)
+            if len(entries) >= count:
+                break
+    return entries
+
+
 def _ensure_daily_log_page(token: str, db_id: str, title: str) -> tuple:
     rows = nc.query_database(
         token, db_id, filter_={"property": "Date", "title": {"equals": title}}
@@ -484,7 +518,7 @@ def _decisions_body(page_text: str) -> str | None:
 
 
 def cmd_rethink(ctx: Ctx, args) -> int:
-    (ctx.session_dir / "rethink_request.txt").write_text(args.reason.strip() + "\n")
+    (ctx.session_dir / "rethink_request.txt").write_text(" ".join(args.reason.split()) + "\n")
     print("OK rethink requested")
     return 0
 
@@ -520,7 +554,7 @@ def cmd_strategy_set(ctx: Ctx, args) -> int:
         validate_decisions(body)
 
     strategy_id = ctx.config.notion_strategy_page_id
-    old_blocks =nc.get_block_children(ctx.token, strategy_id)
+    old_blocks = nc.get_block_children(ctx.token, strategy_id)
     old_text = _blocks_to_text(old_blocks)
 
     archive_id = ctx.config.notion_strategy_archive_page_id
@@ -697,6 +731,12 @@ def cmd_knowledge_add(ctx: Ctx, args) -> int:
 def cmd_log_last(ctx: Ctx, args) -> int:
     text = _last_cycle_entry(ctx.token, ctx.config.notion_daily_logs_db_id)
     print(text if text else "(no daily logs yet)")
+    return 0
+
+
+def cmd_log_recent(ctx: Ctx, args) -> int:
+    entries = _recent_entries(ctx.token, ctx.config.notion_daily_logs_db_id, args.count)
+    print("\n\n".join(entries) if entries else "(no daily logs yet)")
     return 0
 
 
@@ -912,6 +952,9 @@ def _build_parser() -> argparse.ArgumentParser:
     p_log = sub.add_parser("log")
     log_sub = p_log.add_subparsers(dest="cmd", required=True)
     log_sub.add_parser("last").set_defaults(func=cmd_log_last)
+    p_log_recent = log_sub.add_parser("recent")
+    p_log_recent.add_argument("count", nargs="?", type=int, default=5)
+    p_log_recent.set_defaults(func=cmd_log_recent)
     p_log_add = log_sub.add_parser("add")
     p_log_add.add_argument("text")
     p_log_add.set_defaults(func=cmd_log_add)

@@ -12,6 +12,7 @@ if it isn't. A normal cycle runs straight after you and acts on what you write.
 - Take no game actions yourself. `game.py action` is disabled for this run;
   `nav`, `state` and `find` still work.
 - Do not run `kb.py wake`. The normal cycle sets the next wake.
+- Do not run scripts/chores.py; it acts on the game.
 
 Everything else is open to challenge, including earlier decisions, the
 priority order and anything marked as policy.
@@ -29,6 +30,7 @@ Put these in one Bash call:
     python3 scripts/metrics.py summary
     python3 scripts/game.py state
     python3 scripts/kb.py context
+    python3 scripts/kb.py log recent 10
     python3 scripts/rethink.py pivots --last 10
 
 A value shown as "unavailable" is unknown. Do not treat it as zero.

@@ -169,16 +169,25 @@ def _rethink_reasons(session_dir: Path, state: dict, base_reasons: list, now_utc
         mode = rethink.mode()
         if mode == "off":
             return []
+        if "heavy: under attack" in base_reasons:
+            return []  # a normal cycle runs now; any request file stays for later
+        shadow = mode == "log"
+        last_file = rethink.LAST_SHADOW_FILE if shadow else rethink.LAST_RETHINK_FILE
+        runs_file = rethink.SHADOW_RUNS_FILE if shadow else rethink.RUNS_FILE
         lines = metrics.load_lines(session_dir, since=now_utc - timedelta(days=RETHINK_HISTORY_DAYS))
-        fired = rethink.evaluate(lines, session_dir, now_utc)
+        fired = rethink.evaluate(lines, session_dir, now_utc, last_file)
+        fired = rethink.fresh_reasons(fired, session_dir, now_utc, runs_file)
         if not fired:
             return []
-        if mode == "log":
-            for reason in fired:
-                print(f"[rethink-shadow] {reason}")
+        allowed, why = rethink.gate(session_dir, now_utc, runs_file)
+        if shadow:
+            if allowed:
+                print(f"[rethink-shadow] would run: {'; '.join(fired)}")
+                rethink.record_shadow(session_dir, fired, now_utc)
+            else:
+                print(f"[rethink-shadow] would suppress ({why}): {'; '.join(fired)}")
             rethink.consume_request(session_dir)
             return []
-        allowed, why = rethink.gate(session_dir, now_utc)
         if not allowed:
             print(f"[rethink] suppressed ({why}): {'; '.join(fired)}")
             return []

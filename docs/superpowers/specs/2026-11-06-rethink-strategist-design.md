@@ -71,8 +71,12 @@ hide a collapse in one area behind a gain in another.
 
 Adds wake reasons prefixed `rethink:`. In `propose` and `live` modes, any such reason
 wakes the model (exit 10) and runs the strategist before the normal cycle. In `log`
-mode, triggers are written to `hourly.log` as `[rethink-shadow]` lines, produce no
-wake reason and use no model. In `off` mode, they are not evaluated. Thresholds are
+mode, the same checks run against a separate shadow history
+(`rethink_shadow_runs.jsonl`, `last_rethink_shadow.txt`): `[rethink-shadow] would run:
+<reasons>` is printed when a run would have been allowed (and recorded as a shadow
+run), or `[rethink-shadow] would suppress (<why>): <reasons>` when the safeguards
+would have blocked it. Nothing is printed when every condition is still in cooldown.
+Log mode produces no wake reason, uses no model and consumes a request. In `off` mode, they are not evaluated. Thresholds are
 module constants.
 
 | Trigger | Fires when |
@@ -91,8 +95,17 @@ module constants.
 - At least 6 hours between rethink runs, and at most 3 per rolling 24 hours. A
   suppressed trigger logs a line and does not produce a `rethink:` reason.
 - Failed runs count toward these limits, so a broken strategist cannot loop.
-- Attack and message wakes are `heavy:` reasons, so a normal cycle still runs
-  immediately regardless of these limits.
+- Per-condition cooldown: a condition (keyed without numbers, e.g. `stranded stock:
+  marble in Daemon`) already reviewed by a successful run within 72 hours does not
+  fire again. Daily and requested reasons are always kept; if only the daily review is
+  fresh, that is still a run.
+- Attack priority: when the tick is `heavy: under attack`, no `rethink:` reason is
+  produced and any request file is kept, so the normal cycle runs immediately with no
+  strategist ahead of it. Message wakes are unaffected by the limits.
+- Run records are written before the strategist starts (`rethink.py begin-run`, with
+  `ok: null` and the reasons) and completed afterwards, so a killed run still counts
+  toward the limits. If the record cannot be written, the strategist is skipped and
+  the normal cycle still runs. The strategist is run under `timeout -k 60 1800`.
 - Metrics or trigger errors are logged and ignored; the existing pre-tick logic and
   normal cycles proceed. This matches the current fail-open behaviour.
 
@@ -136,7 +149,7 @@ The approved `IKARAI_RETHINK=0` off switch is implemented as
 ### 5. Strategist instructions: `RETHINK.md` (new)
 
 Reads: `metrics.py summary`, `game.py state`, `kb.py context`, recent Daily Log
-entries, `session/pivots.jsonl`, and the trigger reasons.
+entries (`kb.py log recent 10`), `session/pivots.jsonl`, and the trigger reasons.
 
 Hard rules are repeated and cannot be changed by the strategist: no real-money
 purchases, no logging in, no captchas, no anti-bot evasion, no unverified game
@@ -208,7 +221,7 @@ Knowledge base additions are still allowed, since they are facts rather than dec
 
 | Failure | Behaviour |
 |---|---|
-| Strategist crashes, times out or hits budget | Strategy unchanged; failure logged; counts toward safeguards; normal cycle runs |
+| Strategist crashes, times out or hits budget | Failure logged; counts toward safeguards; normal cycle runs. Strategy is unchanged unless the run wrote it before failing, and old versions stay archived. |
 | Strategist writes an invalid `DECISIONS` line | `kb.py` refuses it; old section stays |
 | Metrics or trigger error | Logged; normal pre-tick logic continues |
 | Missing data (military, ranking, short history) | Field `null`; dependent triggers do not fire |

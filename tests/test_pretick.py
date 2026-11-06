@@ -355,7 +355,59 @@ def test_log_mode_only_shadows_and_stays_out_of_wake_reasons(tmp_path, monkeypat
     _quiet_session(tmp_path)
     assert _run_with_mocks(tmp_path) == 0
     assert "rethink:" not in (tmp_path / "session" / "wake_reasons.txt").read_text()
-    assert "[rethink-shadow] daily review due" in capsys.readouterr().out
+    assert "[rethink-shadow] would run: daily review due" in capsys.readouterr().out
+    assert (tmp_path / "session" / "last_rethink_shadow.txt").exists()
+    assert not (tmp_path / "session" / "last_rethink.txt").exists()
+
+
+def test_log_mode_second_tick_is_quiet_after_a_shadow_run(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("IKARAI_RETHINK_MODE", "log")
+    _write_env(tmp_path)
+    _quiet_session(tmp_path)
+    _run_with_mocks(tmp_path)
+    capsys.readouterr()
+    _run_with_mocks(tmp_path)
+    assert "[rethink-shadow]" not in capsys.readouterr().out
+
+
+def test_log_mode_reports_would_suppress_when_gate_blocks(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("IKARAI_RETHINK_MODE", "log")
+    _write_env(tmp_path)
+    _quiet_session(tmp_path)
+    recent = (NOW - timedelta(hours=1)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    (tmp_path / "session" / "rethink_shadow_runs.jsonl").write_text(json.dumps({"time": recent, "ok": True}) + "\n")
+    (tmp_path / "session" / "rethink_request.txt").write_text("why")
+    _run_with_mocks(tmp_path)
+    out = capsys.readouterr().out
+    assert "[rethink-shadow] would suppress (last run under 6h ago): daily review due; requested: why" in out
+    assert not (tmp_path / "session" / "rethink_request.txt").exists()
+
+
+def test_requested_reason_is_never_cooled_down(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("IKARAI_RETHINK_MODE", "live")
+    _write_env(tmp_path)
+    _quiet_session(tmp_path)
+    old = (NOW - timedelta(hours=30)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    (tmp_path / "session" / "last_rethink.txt").write_text(old)
+    (tmp_path / "session" / "rethink_request.txt").write_text("why")
+    (tmp_path / "session" / "rethink_runs.jsonl").write_text(
+        json.dumps({"time": old, "ok": True, "reasons": ["requested: why"]}) + "\n")
+    _run_with_mocks(tmp_path)
+    assert "rethink: requested: why" in (tmp_path / "session" / "wake_reasons.txt").read_text()
+
+
+def test_attack_runs_normal_cycle_without_strategist_and_keeps_request(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("IKARAI_RETHINK_MODE", "live")
+    _write_env(tmp_path)
+    _quiet_session(tmp_path)  # daily review is due and the gate is open
+    (tmp_path / "session" / "rethink_request.txt").write_text("why")
+    state = _state(alerts={"under_attack": True, "unread_messages": 0})
+    assert _run_with_mocks(tmp_path, state=state) == 10
+    reasons = (tmp_path / "session" / "wake_reasons.txt").read_text()
+    assert "heavy: under attack" in reasons
+    assert "rethink:" not in reasons
+    assert (tmp_path / "session" / "rethink_request.txt").exists()
+    assert (tmp_path / "session" / "metrics.jsonl").exists()
 
 
 def test_log_mode_consumes_a_request_so_it_does_not_repeat(tmp_path, monkeypatch):

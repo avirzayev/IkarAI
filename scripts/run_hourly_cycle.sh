@@ -117,8 +117,10 @@ if [ -n "$RETHINK_REASONS" ] && { [ "$RETHINK_MODE" = "propose" ] || [ "$RETHINK
     STRATEGY_READ_ONLY=1
   fi
   echo "[rethink] mode=$RETHINK_MODE model=$RETHINK_MODEL reasons: $(tr '\n' ';' <<< "$RETHINK_REASONS")" >> session/hourly.log
+  # Record the run before it starts, so a killed run still counts toward the safeguards.
+  if python3 scripts/rethink.py begin-run <<< "$RETHINK_REASONS" >> session/hourly.log 2>&1; then
   set +e
-  IKARAI_READ_ONLY=1 IKARAI_STRATEGY_READ_ONLY="$STRATEGY_READ_ONLY" timeout 1800 "$CLAUDE_BIN" -p "Run one strategist review now, following the instructions in your system prompt (mode: $RETHINK_MODE). It was triggered by:
+  IKARAI_READ_ONLY=1 IKARAI_STRATEGY_READ_ONLY="$STRATEGY_READ_ONLY" timeout -k 60 1800 "$CLAUDE_BIN" -p "Run one strategist review now, following the instructions in your system prompt (mode: $RETHINK_MODE). It was triggered by:
 $RETHINK_REASONS" \
     --model "$RETHINK_MODEL" \
     --effort "$RETHINK_EFFORT" \
@@ -130,6 +132,9 @@ $RETHINK_REASONS" \
   set -e
   python3 scripts/rethink.py record-rethink session/last_rethink_run.json --exit-code "$RETHINK_STATUS" >> session/hourly.log 2>&1 || true
   python3 scripts/log_usage.py session/last_rethink_run.json --exit-code "$RETHINK_STATUS" >> session/hourly.log 2>&1 || true
+  else
+    echo "[rethink] could not record the run; skipping strategist" >> session/hourly.log
+  fi
 fi
 
 WAKE_BEFORE="$(stat -c %Y session/next_wake.txt 2>/dev/null || echo none)"

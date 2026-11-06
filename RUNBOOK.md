@@ -28,8 +28,8 @@ the CLIs below are your whole interface.
 
 ## Plan and goals
 
-A separate strategist reviews the plan and writes it to the Strategy page. Follow
-its `GOALS`, `MAIN LIMIT` and `PLAN` sections. Choose builds by payoff toward the
+A separate strategist reviews the plan and writes it to the Strategy page. If the
+Strategy has `GOALS`, `MAIN LIMIT` and `PLAN` sections, follow them. Choose builds by payoff toward the
 goals, not by what happens to be affordable.
 
 Don't reverse a `DECISIONS` line unless its re-check condition is met. If the plan
