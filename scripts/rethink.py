@@ -4,9 +4,11 @@ Trigger evaluation is pure: it reads scoreboard lines and session files and
 returns reason strings. scripts/pretick.py decides what to do with them.
 """
 
+import argparse
+import json
 import os
 import sys
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -30,6 +32,15 @@ OUTAGE_HOURS = 12
 LAST_RETHINK_FILE = "last_rethink.txt"
 LAST_SUCCESS_FILE = "last_model_success.txt"
 REQUEST_FILE = "rethink_request.txt"
+
+MIN_HOURS_BETWEEN_RUNS = 6
+MAX_RUNS_PER_DAY = 3
+KEEP_RUN_RECORDS = 200
+
+RUNS_FILE = "rethink_runs.jsonl"
+FAILURES_FILE = "model_failures.txt"
+PIVOTS_FILE = "pivots.jsonl"
+PIVOT_FIELDS = ("triggers", "main_limit", "changes", "expected", "check_by", "sources", "grade_of_previous")
 
 
 def mode() -> str:
@@ -174,3 +185,141 @@ def evaluate(lines: list, session_dir: Path, now: datetime) -> list:
         + _outage(session_dir, now)
         + _requested(session_dir)
     )
+
+
+def _format_time(moment: datetime) -> str:
+    return moment.astimezone(timezone.utc).strftime(metrics.TIME_FORMAT)
+
+
+def _read_jsonl(path: Path) -> list:
+    if not path.exists():
+        return []
+    rows = []
+    for raw in path.read_text().splitlines():
+        try:
+            rows.append(json.loads(raw))
+        except ValueError:
+            continue
+    return rows
+
+
+def gate(session_dir: Path, now: datetime) -> tuple:
+    """Whether a rethink may run now. Failed runs count, so a broken strategist can't loop."""
+    times = []
+    for row in _read_jsonl(Path(session_dir) / RUNS_FILE):
+        try:
+            times.append(metrics.parse_time(row["time"]))
+        except (KeyError, TypeError, ValueError):
+            continue
+    if any(now - t < timedelta(hours=MIN_HOURS_BETWEEN_RUNS) for t in times):
+        return False, f"last run under {MIN_HOURS_BETWEEN_RUNS}h ago"
+    if sum(1 for t in times if now - t < timedelta(hours=24)) >= MAX_RUNS_PER_DAY:
+        return False, f"already {MAX_RUNS_PER_DAY} runs in 24h"
+    return True, "ok"
+
+
+def consume_request(session_dir: Path) -> None:
+    (Path(session_dir) / REQUEST_FILE).unlink(missing_ok=True)
+
+
+def _run_ok(result_path: Path, exit_code: int) -> bool:
+    if exit_code != 0:
+        return False
+    try:
+        return not json.loads(Path(result_path).read_text()).get("is_error")
+    except (OSError, ValueError, AttributeError):
+        return False
+
+
+def consecutive_failures(session_dir: Path) -> int:
+    try:
+        return int((Path(session_dir) / FAILURES_FILE).read_text().strip())
+    except (OSError, ValueError):
+        return 0
+
+
+def record_cycle(session_dir: Path, result_path: Path, exit_code: int, now: datetime) -> bool:
+    session_dir = Path(session_dir)
+    ok = _run_ok(result_path, exit_code)
+    if ok:
+        (session_dir / LAST_SUCCESS_FILE).write_text(_format_time(now) + "\n")
+        (session_dir / FAILURES_FILE).write_text("0\n")
+    else:
+        (session_dir / FAILURES_FILE).write_text(f"{consecutive_failures(session_dir) + 1}\n")
+    return ok
+
+
+def record_rethink(session_dir: Path, result_path: Path, exit_code: int, now: datetime) -> bool:
+    session_dir = Path(session_dir)
+    ok = _run_ok(result_path, exit_code)
+    path = session_dir / RUNS_FILE
+    rows = _read_jsonl(path)[-(KEEP_RUN_RECORDS - 1):]
+    rows.append({"time": _format_time(now), "ok": ok})
+    path.write_text("".join(json.dumps(r) + "\n" for r in rows))
+    if ok:
+        (session_dir / LAST_RETHINK_FILE).write_text(_format_time(now) + "\n")
+    return ok
+
+
+def last_error(session_dir: Path) -> str:
+    try:
+        result = json.loads((Path(session_dir) / "last_run.json").read_text()).get("result")
+    except (OSError, ValueError, AttributeError):
+        return "unknown"
+    return str(result)[:500] if result else "unknown"
+
+
+def add_pivot(session_dir: Path, pivot: dict, now: datetime) -> None:
+    if os.environ.get("IKARAI_STRATEGY_READ_ONLY") == "1":
+        raise ValueError("refused in proposal mode: write session/rethink_proposal.md instead")
+    missing = [f for f in PIVOT_FIELDS if f not in pivot]
+    if missing:
+        raise ValueError(f"pivot is missing fields: {', '.join(missing)}")
+    row = {"time": _format_time(now), **{f: pivot[f] for f in PIVOT_FIELDS}}
+    with (Path(session_dir) / PIVOTS_FILE).open("a") as handle:
+        handle.write(json.dumps(row, ensure_ascii=False) + "\n")
+
+
+def recent_pivots(session_dir: Path, count: int) -> list:
+    return _read_jsonl(Path(session_dir) / PIVOTS_FILE)[-count:]
+
+
+def main(argv: list | None = None, project_root=None, now: datetime | None = None) -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    sub = parser.add_subparsers(dest="command", required=True)
+    for name in ("record-cycle", "record-rethink"):
+        p_record = sub.add_parser(name)
+        p_record.add_argument("result_path")
+        p_record.add_argument("--exit-code", type=int, required=True)
+    p_pivot = sub.add_parser("pivot")
+    p_pivot.add_argument("json_text")
+    p_pivots = sub.add_parser("pivots")
+    p_pivots.add_argument("--last", type=int, default=10)
+    args = parser.parse_args(sys.argv[1:] if argv is None else argv)
+
+    root = Path(project_root) if project_root is not None else PROJECT_ROOT
+    session_dir = root / "session"
+    now = now if now is not None else datetime.now(timezone.utc)
+
+    if args.command == "record-cycle":
+        record_cycle(session_dir, Path(args.result_path), args.exit_code, now)
+        return 0
+    if args.command == "record-rethink":
+        ok = record_rethink(session_dir, Path(args.result_path), args.exit_code, now)
+        print(f"[rethink] strategist run {'ok' if ok else 'FAILED'}; Strategy unchanged if failed")
+        return 0
+    if args.command == "pivot":
+        try:
+            add_pivot(session_dir, json.loads(args.json_text), now)
+        except ValueError as exc:
+            print(f"pivot refused: {exc}", file=sys.stderr)
+            return 1
+        print("OK pivot recorded")
+        return 0
+    for row in recent_pivots(session_dir, args.last):
+        print(json.dumps(row, ensure_ascii=False))
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
