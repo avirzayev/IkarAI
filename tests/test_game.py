@@ -1515,3 +1515,44 @@ def test_find_default_file_is_last_json(tmp_path, capsys):
     assert exit_code == 0
     assert "findme" in out
     assert "not this one" not in out
+
+
+# ---------------------------------------------------------------------------
+# read-only mode (strategist)
+# ---------------------------------------------------------------------------
+
+
+def test_read_only_refuses_action(tmp_path, capsys, monkeypatch):
+    monkeypatch.setenv("IKARAI_READ_ONLY", "1")
+    assert game.main(["action", "IslandScreen", "workerPlan", "cityId=1"], project_root=tmp_path) == 2
+    assert "READ_ONLY" in capsys.readouterr().out
+
+
+def test_read_only_refuses_set_cookie(tmp_path, capsys, monkeypatch):
+    monkeypatch.setenv("IKARAI_READ_ONLY", "1")
+    assert game.main(["set-cookie", "--cookie", "x=1"], project_root=tmp_path) == 2
+    assert "READ_ONLY" in capsys.readouterr().out
+    assert not (tmp_path / "session" / "cookie.txt").exists()
+
+
+def test_read_only_batch_refuses_action_lines_but_runs_nav(tmp_path, capsys, monkeypatch):
+    import io
+    monkeypatch.setenv("IKARAI_READ_ONLY", "1")
+    monkeypatch.setattr("sys.stdin", io.StringIO("nav townHall\naction IslandScreen workerPlan\n"))
+    with patch("game._cmd_nav", return_value=0) as mock_nav:
+        assert game.main(["batch"], project_root=tmp_path) == 2
+    mock_nav.assert_called_once()
+    assert "READ_ONLY" in capsys.readouterr().out
+
+
+def test_read_only_allows_nav(tmp_path, monkeypatch):
+    monkeypatch.setenv("IKARAI_READ_ONLY", "1")
+    with patch("game._cmd_nav", return_value=0) as mock_nav:
+        assert game.main(["nav", "townHall"], project_root=tmp_path) == 0
+    mock_nav.assert_called_once()
+
+
+def test_actions_not_refused_without_flag(tmp_path, capsys, monkeypatch):
+    monkeypatch.delenv("IKARAI_READ_ONLY", raising=False)
+    game.main(["action", "IslandScreen", "workerPlan", "cityId=1"], project_root=tmp_path)
+    assert "READ_ONLY" not in capsys.readouterr().out
